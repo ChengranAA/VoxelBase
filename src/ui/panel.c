@@ -24,6 +24,7 @@ static const char *vbl_keywords[] = {
     "affine", "translate", "rotate", "scale", "apply",
     "plot-line", "plot-hist", "add-line", "clear",
     "load-script", "repl-reset",
+    "if", "vars",
     "vol3d", "vol4d", "timeseries", "corrmap", "mask", "scalar", "affine",
     NULL
 };

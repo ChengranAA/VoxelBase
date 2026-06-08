@@ -648,6 +648,8 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                 {"load-script","(load-script \"path.vbl\")","run a .vbl script file",              "any"},
                 {"clear",    "(clear)",             "clear output + plots",                       "any"},
                 {"repl-reset","(repl-reset)",       "reinitialize VBL environment",                "any"},
+                {"if",       "(if cond then [else])","conditional: eval then if truthy, else otherwise","any"},
+                {"vars",     "(vars)",              "list all defined variables",                   "any"},
             };
             int n_ops = (int)(sizeof(ops) / sizeof(ops[0]));
 
@@ -688,7 +690,7 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                 if (g_app->repl_out_count < 200)
                     snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
                              "  ── Special Forms ──");
-                const char *sf[] = {"def","print","save","load","load-script","slot","show","clear","repl-reset",NULL};
+                const char *sf[] = {"def","print","save","load","load-script","slot","show","if","vars","clear","repl-reset",NULL};
                 for (int j = 0; sf[j]; j++)
                     for (int i = 0; i < n_ops && g_app->repl_out_count < 200; i++)
                         if (strcmp(ops[i].name, sf[j]) == 0)
@@ -823,6 +825,42 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
             goto check_err;
         }
 
+        /* (vars) — list all defined variables */
+        if (strcmp(cmd, "vars") == 0) {
+            int n = env_count();
+            if (n == 0) {
+                if (g_app->repl_out_count < 200)
+                    snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                             "  (no variables defined)");
+            } else {
+                for (int vi = 0; vi < n; vi++) {
+                    const char *vname; Value *vv;
+                    env_get(vi, &vname, &vv);
+                    const char *tn = "?";
+                    if (vv) switch (vv->type) {
+                        case TYPE_VOLUME3D: tn="vol3d"; break;
+                        case TYPE_VOLUME4D: tn="vol4d"; break;
+                        case TYPE_TIMESERIES: tn="ts"; break;
+                        case TYPE_CORRMAP: tn="corrmap"; break;
+                        case TYPE_MASK: tn="mask"; break;
+                        case TYPE_NIL: tn="nil"; break;
+                        case TYPE_AFFINE: tn="affine"; break;
+                    }
+                    if (vv && vv->type==TYPE_VOLUME3D && vv->nx==1 && vv->ny==1 && vv->nz==1)
+                        snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                                 "  %-20s %s = %.6g", vname, tn, vv->data[0]);
+                    else if (vv)
+                        snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                                 "  %-20s %s %dx%dx%d", vname, tn, vv->nx, vv->ny, vv->nz);
+                    else
+                        snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                                 "  %-20s (null)", vname);
+                }
+            }
+            ast_free(ast);
+            goto check_err;
+        }
+
         /* (show expr) — push to new slot */
         if (strcmp(cmd, "show") == 0 && ast->list.count >= 2) {
             GraphNode *gn = bridge_build_with_hook(ast->list.items[1]);
@@ -867,11 +905,11 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                         continue;
                     }
                     if (sa->type == AST_LIST && sa->list.count > 0 &&
-                        sa->list.items[0]->type == AST_SYMBOL &&
-                        strcmp(sa->list.items[0]->symbol, "def") == 0 &&
-                        sa->list.count >= 3 && sa->list.items[1]->type == AST_SYMBOL) {
-                        const char *sname = sa->list.items[1]->symbol;
-                        {
+                        sa->list.items[0]->type == AST_SYMBOL) {
+                        AstNode *sh = sa->list.items[0];
+                        if (strcmp(sh->symbol, "def") == 0 &&
+                            sa->list.count >= 3 && sa->list.items[1]->type == AST_SYMBOL) {
+                            const char *sname = sa->list.items[1]->symbol;
                             static const char *resv[] = {
                                 "def","print","show","save","vars","exit","help",
                                 "slot","load","load-script","repl-reset","clear",
@@ -888,23 +926,65 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                                 ast_free(sa); free(scopy);
                                 continue;
                             }
+                            GraphNode *gn = bridge_build_with_hook(sa->list.items[2]);
+                            if (gn && graph_eval(gn) == 0) {
+                                env_bind(sname, gn->result);
+                                gn->result = NULL; gn->literal = NULL;
+                            }
+                            graph_free(gn);
+                        } else if (strcmp(sh->symbol, "vars") == 0) {
+                            int n = env_count();
+                            for (int vi = 0; vi < n && g_app->repl_out_count < 200; vi++) {
+                                const char *vn; Value *vv;
+                                env_get(vi, &vn, &vv);
+                                const char *tn = "?";
+                                if (vv) switch (vv->type) {
+                                    case TYPE_VOLUME3D: tn="vol3d"; break;
+                                    case TYPE_VOLUME4D: tn="vol4d"; break;
+                                    case TYPE_TIMESERIES: tn="ts"; break;
+                                    case TYPE_CORRMAP: tn="corrmap"; break;
+                                    case TYPE_MASK: tn="mask"; break;
+                                    case TYPE_NIL: tn="nil"; break;
+                                    case TYPE_AFFINE: tn="affine"; break;
+                                }
+                                if (vv && vv->type==TYPE_VOLUME3D && vv->nx==1 && vv->ny==1 && vv->nz==1)
+                                    snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                                             "  %-20s %s = %.6g", vn, tn, vv->data[0]);
+                                else if (vv)
+                                    snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                                             "  %-20s %s %dx%dx%d", vn, tn, vv->nx, vv->ny, vv->nz);
+                            }
+                        } else if (strcmp(sh->symbol, "if") == 0 && sa->list.count >= 3) {
+                            GraphNode *cg = bridge_build_with_hook(sa->list.items[1]);
+                            int truthy = 0;
+                            if (cg && graph_eval(cg) == 0 && cg->result) {
+                                Value *cv = cg->result;
+                                truthy = cv->is_int ? (cv->idata && cv->idata[0] != 0)
+                                                    : (cv->data  && cv->data[0]  != 0.0f);
+                            }
+                            graph_free(cg);
+                            AstNode *branch = truthy ? sa->list.items[2]
+                                         : (sa->list.count >= 4 ? sa->list.items[3] : NULL);
+                            if (branch) {
+                                GraphNode *bg = bridge_build_with_hook(branch);
+                                if (bg && graph_eval(bg) == 0 && bg->result) {
+                                    char *out = capture_stdout_cb(bg->result);
+                                    if (out && g_app->repl_out_count < 200)
+                                        snprintf(g_app->repl_output[g_app->repl_out_count++], 128, "  %s", out);
+                                    free(out);
+                                }
+                                graph_free(bg);
+                            }
+                        } else {
+                            GraphNode *gn = bridge_build_with_hook(sa);
+                            if (gn && graph_eval(gn) == 0 && gn->result) {
+                                char *out = capture_stdout_cb(gn->result);
+                                if (out && g_app->repl_out_count < 200)
+                                    snprintf(g_app->repl_output[g_app->repl_out_count++], 128, "  %s", out);
+                                free(out);
+                            }
+                            graph_free(gn);
                         }
-                        GraphNode *gn = bridge_build_with_hook(sa->list.items[2]);
-                        if (gn && graph_eval(gn) == 0) {
-                            env_bind(sname, gn->result);
-                            gn->result = NULL; gn->literal = NULL;
-                        }
-                        graph_free(gn);
-                    } else {
-                        GraphNode *gn = bridge_build_with_hook(sa);
-                        if (gn && graph_eval(gn) == 0 && gn->result) {
-                            char *out = capture_stdout_cb(gn->result);
-                            if (out && g_app->repl_out_count < 200)
-                                snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
-                                         "  %s", out);
-                            free(out);
-                        }
-                        graph_free(gn);
                     }
                     ast_free(sa);
                 }

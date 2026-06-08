@@ -710,6 +710,7 @@ int main(int argc, char **argv) {
                 int idx = add_slot_from_pending(&app);
                 if (idx >= 0) {
                     app.active_slot = idx;
+                    app.active_panel_tab = 0;
                     app_init_buffers(&app);
                     app.dirty_slices = 1;
                     app.force_texture_recreate = 1;
@@ -795,6 +796,7 @@ int main(int argc, char **argv) {
             int idx = add_slot_from_pending(&app);
             if (idx >= 0) {
                 app.active_slot = idx;
+                app.active_panel_tab = 0;
                 app_init_buffers(&app);
                 app.force_texture_recreate = 1;
                 app.dirty_slices = 1;
@@ -804,6 +806,7 @@ int main(int argc, char **argv) {
             int idx = add_slot_from_file(&app, app.repl_pending_load);
             if (idx >= 0) {
                 app.active_slot = idx;
+                app.active_panel_tab = 0;
                 app_init_buffers(&app);
                 app.force_texture_recreate = 1;
                 app.dirty_slices = 1;
