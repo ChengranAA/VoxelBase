@@ -38,6 +38,7 @@ Value *op_crop(int argc, Value **args);
 Value *op_pad(int argc, Value **args);
 Value *op_bandpass(int argc, Value **args);
 Value *op_detrend(int argc, Value **args);
+Value *op_drift(int argc, Value **args);
 Value *op_tstd(int argc, Value **args);
 Value *op_eq(int argc, Value **args);
 Value *op_gt(int argc, Value **args);

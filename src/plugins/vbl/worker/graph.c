@@ -91,6 +91,12 @@ GraphNode *graph_build(AstNode *ast) {
                 return nil;
             }
 
+            /* Check bridge hook first — can override built-in ops */
+            if (g_bridge_hook) {
+                GraphNode *g = g_bridge_hook(op_name, ast);
+                if (g) return g;
+            }
+
             /* Generic op call */
             OpDef *od = op_find(op_alias(op_name));
             if (od) {
@@ -99,12 +105,6 @@ GraphNode *graph_build(AstNode *ast) {
                 for (int i = 1; i < ast->list.count; i++)
                     gn_add_arg(g, graph_build(ast->list.items[i]));
                 return g;
-            }
-
-            /* Check bridge hook before failing */
-            if (g_bridge_hook) {
-                GraphNode *g = g_bridge_hook(op_name, ast);
-                if (g) return g;
             }
 
             fprintf(stderr, "ERROR: unknown operation '%s'\n", op_name);

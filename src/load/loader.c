@@ -307,6 +307,49 @@ int add_slot_from_file(App *app, const char *path) {
     return app->num_slots - 1;
 }
 
+int add_slot_from_pending(App *app) {
+    if (app->num_slots >= MAX_SLOTS) return -1;
+    if (!app->repl_pending_vol) return -1;
+
+    ImageSlot *slot = &app->slots[app->num_slots];
+    memset(slot, 0, sizeof(*slot));
+
+    slot->nx  = app->repl_pending_nx;
+    slot->ny  = app->repl_pending_ny;
+    slot->nz  = app->repl_pending_nz;
+    slot->nt  = app->repl_pending_nt;
+    slot->dx  = app->repl_pending_dx;
+    slot->dy  = app->repl_pending_dy;
+    slot->dz  = app->repl_pending_dz;
+    slot->tr  = app->repl_pending_tr;
+    slot->vol = app->repl_pending_vol;
+    slot->cmap = 0;
+    slot->zoom = 1.0;
+    slot->zoom_sync = 0;
+    slot->cx = slot->nx / 2;
+    slot->cy = slot->ny / 2;
+    slot->cz = slot->nz / 2;
+    slot->cross_sync = 1;
+    snprintf(slot->filename, sizeof(slot->filename), "[VBL]");
+
+    int64_t nvox = (int64_t)slot->nx * slot->ny * slot->nz * (slot->nt > 0 ? slot->nt : 1);
+    int64_t nvox_t0 = (int64_t)slot->nx * slot->ny * slot->nz;
+    float lo = slot->vol[0], hi = slot->vol[0];
+    for (int64_t j = 0; j < nvox_t0 && j < nvox; j++) {
+        if (slot->vol[j] < lo) lo = slot->vol[j];
+        if (slot->vol[j] > hi) hi = slot->vol[j];
+    }
+    slot->vmin = slot->auto_vmin = lo;
+    slot->vmax = slot->auto_vmax = hi;
+
+    /* clear pending state */
+    app->repl_pending_vol = NULL;
+    app->repl_pending_has_data = 0;
+
+    app->num_slots++;
+    return app->num_slots - 1;
+}
+
 int add_attachment_to_slot(App *app, int slot_idx, const char *path, int is_seg) {
     if (slot_idx < 0 || slot_idx >= app->num_slots) return -1;
     ImageSlot *slot = &app->slots[slot_idx];

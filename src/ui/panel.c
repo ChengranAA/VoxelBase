@@ -18,7 +18,7 @@ static const char *vbl_keywords[] = {
     "add", "sub", "mul", "div",
     "smooth", "crop", "pad", "threshold", "mask", "mask-int",
     "correlate", "seed", "noise", "vol3d", "vol4d",
-    "bandpass", "detrend",
+    "bandpass", "detrend", "drift",
     "slice", "tslice", "ts-range", "copy", "voxel",
     "eq", "gt", "lt", "and", "or",
     "affine", "translate", "rotate", "scale", "apply",

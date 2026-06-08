@@ -130,6 +130,11 @@ typedef struct {
   int repl_out_count;
   int repl_scroll;
   char repl_pending_load[1024]; /* deferred load path */
+  /* deferred in-memory slot creation (no tmp file) */
+  float *repl_pending_vol;
+  int    repl_pending_nx, repl_pending_ny, repl_pending_nz, repl_pending_nt;
+  double repl_pending_dx, repl_pending_dy, repl_pending_dz, repl_pending_tr;
+  int    repl_pending_has_data;
   char repl_hint[64];           /* autocompletion ghost text */
   int repl_mode;                /* 0=text output, 1=canvas */
 /* plot data */

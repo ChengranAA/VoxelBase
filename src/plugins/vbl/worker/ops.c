@@ -62,6 +62,7 @@ static OpDef g_ops[] = {
     {"pad",       op_pad,       7, 7},
     {"bandpass",  op_bandpass,  3, 3},
     {"detrend",   op_detrend,   1, 1},
+    {"drift",       op_drift,       1, 2},
     {"tstd",      op_tstd,      1, 1},
     {"eq",        op_eq,        2, 2},
     {"gt",        op_gt,        2, 2},
@@ -801,6 +802,35 @@ Value *op_detrend(int c, Value **a) {
         for (int t=0; t<nt; t++) r->data[t*n3+i] = (float)(v->data[t*n3+i] - (slope*t + inter));
     }
     snprintf(r->label, sizeof(r->label), "(detrend %s)", v->label);
+    return r;
+}
+
+/* ── Drift: frame-wise displacement ──────────────────────────── */
+/* RMS diff between consecutive frames, optional downsampling stride */
+Value *op_drift(int c, Value **a) {
+    if (!typechk("drift", a[0], TYPE_VOLUME4D)) return val_new_nil();
+    Value *v = a[0];
+    int factor = (c >= 2) ? (int)a[1]->data[0] : 1;
+    if (factor < 1) factor = 1;
+
+    int nt = v->nt;
+    int64_t n3 = (int64_t)v->nx * v->ny * v->nz;
+    int64_t n_eff = (n3 + factor - 1) / factor;
+    Value *r = val_new_timeseries(nt, v->tr);
+    float *f0 = malloc((size_t)n3 * sizeof(float));
+    for (int64_t i = 0; i < n3; i++) f0[i] = v->data[i];
+    for (int t = 0; t < nt; t++) {
+        double sum = 0.0;
+        int64_t count = 0;
+        for (int64_t i = 0; i < n3; i += factor) {
+            if (fabsf(f0[i]) < 1e-6f) continue;
+            sum += (double)fabsf(v->data[t * n3 + i] - f0[i]);
+            count++;
+        }
+        r->data[t] = count > 0 ? (float)(sum / (double)count) : 0.0f;
+    }
+    free(f0);
+    snprintf(r->label, sizeof(r->label), "(drift %s)", v->label);
     return r;
 }
 

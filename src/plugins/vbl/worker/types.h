@@ -22,6 +22,7 @@ typedef struct Value {
   int is_int;     /* 1 = use idata, 0 = use data */
   int64_t data_len;
   int owns_data;        /* 1 = must free, 0 = view into parent */
+  int slot_index;       /* >= 0 if this is a zero-copy slot ref */
   struct Value *parent; /* non-NULL if this is a view */
   int64_t offset;       /* byte offset into parent->data */
   char label[256];
@@ -32,6 +33,7 @@ Value *val_new_volume4d(int nx, int ny, int nz, int nt, double dx, double dy,
 Value *val_new_volume3d(int nx, int ny, int nz, double dx, double dy,
                         double dz);
 Value *val_new_timeseries(int len, double tr);
+Value *val_new_slot_ref(int idx);
 Value *val_new_corrmap(int nx, int ny, int nz, double dx, double dy, double dz);
 Value *val_new_mask(int nx, int ny, int nz, double dx, double dy, double dz);
 Value *val_new_mask_int(int nx, int ny, int nz, double dx, double dy,

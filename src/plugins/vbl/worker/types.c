@@ -130,7 +130,7 @@ Value *val_new_volume3d_from_buf(int nx, int ny, int nz,
 
 void val_free(Value *v) {
     if (!v) return;
-    if (v->owns_data) {
+    if (v->owns_data && v->slot_index < 0) {
         free(v->data);
         free(v->idata);
     }

@@ -23,6 +23,7 @@ void process_hotkeys(App *app);
 void draw_panel(App *app, Rectangle bounds);
 void draw_sidebar(App *app, Rectangle bounds);
 int add_slot_from_file(App *app, const char *path);
+int add_slot_from_pending(App *app);
 int add_attachment_to_slot(App *app, int slot_idx, const char *path, int is_seg);
 void save_screenshot(App *app);
 
@@ -422,6 +423,7 @@ int main(int argc, char **argv) {
             app.drop_count = 0;
             if (app.num_slots > prev_count) {
                 app.active_slot = app.num_slots - 1;
+                app.active_panel_tab = 0;
                 app_init_buffers(&app);
                 app.force_texture_recreate = 1;
                 app.dirty_slices = 1;
@@ -582,6 +584,7 @@ int main(int argc, char **argv) {
                     if (new_ct >= cs_ts->nt) new_ct = cs_ts->nt - 1;
                     if (new_ct != cs_ts->ct) {
                         cs_ts->ct = new_ct;
+                        app.dirty_slices = 1;
                     }
                 }
             }
@@ -703,6 +706,15 @@ int main(int argc, char **argv) {
             draw_panel(&app, repl_bounds);
             EndDrawing();
             /* still process REPL deferred load */
+            if (app.repl_pending_has_data && app.num_slots < MAX_SLOTS) {
+                int idx = add_slot_from_pending(&app);
+                if (idx >= 0) {
+                    app.active_slot = idx;
+                    app_init_buffers(&app);
+                    app.dirty_slices = 1;
+                    app.force_texture_recreate = 1;
+                }
+            }
             if (app.repl_pending_load[0] && app.num_slots < MAX_SLOTS) {
                 int idx = add_slot_from_file(&app, app.repl_pending_load);
                 if (idx >= 0) {
@@ -714,6 +726,8 @@ int main(int argc, char **argv) {
                         snprintf(app.repl_output[app.repl_out_count++], 128, "  loaded slot %d", idx);
                 }
                 app.repl_pending_load[0] = 0;
+    app.repl_pending_vol = NULL;
+    app.repl_pending_has_data = 0;
             }
             continue;
         }
@@ -776,7 +790,16 @@ int main(int argc, char **argv) {
             app.pending_remove_slot = -1;
         }
 
-        /* process REPL deferred load */
+        /* process REPL deferred load (in-memory or file) */
+        if (app.repl_pending_has_data && app.num_slots < MAX_SLOTS) {
+            int idx = add_slot_from_pending(&app);
+            if (idx >= 0) {
+                app.active_slot = idx;
+                app_init_buffers(&app);
+                app.force_texture_recreate = 1;
+                app.dirty_slices = 1;
+            }
+        }
         if (app.repl_pending_load[0] && app.num_slots < MAX_SLOTS) {
             int idx = add_slot_from_file(&app, app.repl_pending_load);
             if (idx >= 0) {
@@ -788,6 +811,8 @@ int main(int argc, char **argv) {
                     snprintf(app.repl_output[app.repl_out_count++], 128, "  loaded slot %d", idx);
             }
             app.repl_pending_load[0] = 0;
+    app.repl_pending_vol = NULL;
+    app.repl_pending_has_data = 0;
         }
 
         /* process buffered drops: attachments if pending_attach was set by panel */

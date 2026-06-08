@@ -55,6 +55,24 @@ static void err_write(const char *msg) {
 }
 static void err_clear(void) { g_err_len = 0; g_err_buf[0] = '\0'; }
 
+/* ── slot ref: zero-copy Value pointing into slot data ────────── */
+Value *val_new_slot_ref(int idx) {
+    if (!g_app || idx < 0 || idx >= g_app->num_slots) return val_new_nil();
+    ImageSlot *s = &g_app->slots[idx];
+    if (!s->vol) return val_new_nil();
+    Value *v = calloc(1, sizeof(Value));
+    v->type = s->nt > 1 ? TYPE_VOLUME4D : TYPE_VOLUME3D;
+    v->nx = s->nx; v->ny = s->ny; v->nz = s->nz; v->nt = s->nt > 0 ? s->nt : 1;
+    v->dx = s->dx; v->dy = s->dy; v->dz = s->dz; v->tr = s->tr;
+    v->data_len = (int64_t)s->nx * s->ny * s->nz * v->nt;
+    v->data = s->vol;
+    v->owns_data = 1;    /* so ew_bc creates copies, not in-place mutate */
+    v->slot_index = idx; /* val_free skips free() when slot_index >= 0 */
+    snprintf(v->label, sizeof(v->label), "#<slot-ref %d %dx%dx%dx%d>",
+             idx, s->nx, s->ny, s->nz, v->nt);
+    return v;
+}
+
 /* ── bridge ops ───────────────────────────────────────────────── */
 
 static Value *bridge_op_slot(int argc, Value **args) {
@@ -77,12 +95,9 @@ static Value *bridge_op_slot(int argc, Value **args) {
         err_write("ERROR: slot has no volume data\n");
         return val_new_nil();
     }
-    /* refuse to copy huge volumes (use seed for timeseries instead) */
+    /* for huge volumes, return zero-copy ref instead of copying */
     int64_t total = (int64_t)s->nx * s->ny * s->nz * (s->nt > 1 ? s->nt : 1);
-    if (total > 200000000) {
-        err_write("ERROR: slot too large for (slot n), use (seed (slot n) x y z)\n");
-        return val_new_nil();
-    }
+    int use_ref = (total > 200000000);
 
     int t = -1;
     if (argc >= 2 && args[1]->type == TYPE_VOLUME3D &&
@@ -91,15 +106,24 @@ static Value *bridge_op_slot(int argc, Value **args) {
     }
 
     if (s->nt > 1 && t < 0) {
+        if (use_ref) return val_new_slot_ref(n);
         return val_new_volume4d_from_buf(s->nx, s->ny, s->nz, s->nt,
                                           s->dx, s->dy, s->dz, s->tr, s->vol);
     } else if (s->nt > 1 && t >= 0) {
         if (t >= s->nt) t = s->nt - 1;
         int64_t offset = (int64_t)t * s->nx * s->ny * s->nz;
+        if (use_ref) {
+            Value *r = val_new_slot_ref(n);
+            r->type = TYPE_VOLUME3D; r->nt = 1;
+            r->data = s->vol + offset;
+            r->data_len = (int64_t)s->nx * s->ny * s->nz;
+            return r;
+        }
         return val_new_volume3d_from_buf(s->nx, s->ny, s->nz,
                                           s->dx, s->dy, s->dz,
                                           s->vol + offset);
     } else {
+        if (use_ref) return val_new_slot_ref(n);
         return val_new_volume3d_from_buf(s->nx, s->ny, s->nz,
                                           s->dx, s->dy, s->dz, s->vol);
     }
@@ -108,7 +132,7 @@ static Value *bridge_op_slot(int argc, Value **args) {
 static Value *bridge_op_show(int argc, Value **args) {
     if (argc < 1 || !g_app) return val_new_nil();
     Value *v = args[0];
-    if (!v || !v->data || v->nx <= 0) {
+    if (!v || !v->data) {
         err_write("ERROR: (show) empty value\n");
         return val_new_nil();
     }
@@ -116,22 +140,32 @@ static Value *bridge_op_show(int argc, Value **args) {
         err_write("ERROR: (show) max slots reached\n");
         return val_new_nil();
     }
-
-    /* Write to unique temp NIfTI; main loop loads it after EndDrawing */
-    static int show_counter = 0;
-    char tmppath[1024];
-    snprintf(tmppath, sizeof(tmppath),
-             "/tmp/vbl_show_%d_%d.nii", (int)getpid(), ++show_counter);
-    if (val_save_nifti(v, tmppath) != 0) {
-        err_write("ERROR: (show) failed to write temp file\n");
+    /* free previous pending data if any */
+    free(g_app->repl_pending_vol);
+    g_app->repl_pending_vol = NULL;
+    int nt = v->nt > 0 ? v->nt : 1;
+    int64_t nvox = (int64_t)(v->nx > 0 ? v->nx : 1) *
+                   (v->ny > 0 ? v->ny : 1) *
+                   (v->nz > 0 ? v->nz : 1) * nt;
+    if (nvox < 1) nvox = 1;
+    g_app->repl_pending_vol = malloc((size_t)nvox * sizeof(float));
+    if (!g_app->repl_pending_vol) {
+        err_write("ERROR: (show) out of memory\n");
         return val_new_nil();
     }
-
-    snprintf(g_app->repl_pending_load, sizeof(g_app->repl_pending_load),
-             "%s", tmppath);
+    memcpy(g_app->repl_pending_vol, v->data, (size_t)nvox * sizeof(float));
+    g_app->repl_pending_nx  = v->nx > 0 ? v->nx : 1;
+    g_app->repl_pending_ny  = v->ny > 0 ? v->ny : 1;
+    g_app->repl_pending_nz  = v->nz > 0 ? v->nz : 1;
+    g_app->repl_pending_nt  = nt;
+    g_app->repl_pending_dx  = v->dx;
+    g_app->repl_pending_dy  = v->dy;
+    g_app->repl_pending_dz  = v->dz;
+    g_app->repl_pending_tr  = v->tr;
+    g_app->repl_pending_has_data = 1;
     if (g_app->repl_out_count < 200)
         snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
-                 "  [show] wrote %s", tmppath);
+                 "  [show] %dx%dx%dx%d", v->nx, v->ny, v->nz, nt);
     return val_new_nil();
 }
 
@@ -148,6 +182,12 @@ static void plot_add_series(App *app, Value *ys, Value *xs, const char *name) {
         err_write("ERROR: max 8 plot series reached\n");
         return;
     }
+    /* reject multi-dimensional data — user must flatten first */
+    if (ys->type == TYPE_VOLUME3D || ys->type == TYPE_VOLUME4D) {
+        err_write("ERROR: plot-line expects 1D data. "
+                  "Use (tmean ...), (voxel ...), or (slice ...) first.\n");
+        return;
+    }
     int n = ys->nt > 1 ? ys->nt : (ys->nx * ys->ny * ys->nz);
     if (n < 1) { err_write("ERROR: empty data\n"); return; }
     if (n > MAX_PLOT_POINTS) {
@@ -159,9 +199,13 @@ static void plot_add_series(App *app, Value *ys, Value *xs, const char *name) {
     app->plot_series[si].color = s_palette[si % 8];
     snprintf(app->plot_series[si].name, sizeof(app->plot_series[si].name),
              "%s", name ? name : "series");
+    int64_t ys_stride = ys->nt > 1 ? (int64_t)ys->nx * ys->ny * ys->nz : 1;
+    if (ys_stride < 1) ys_stride = 1;
+    int64_t xs_stride = xs ? (xs->nt > 1 ? (int64_t)xs->nx * xs->ny * xs->nz : 1) : 1;
+    if (xs_stride < 1) xs_stride = 1;
     for (int i = 0; i < n; i++) {
-        app->plot_series[si].ys[i] = ys->data[i];
-        app->plot_series[si].xs[i] = xs ? xs->data[i % xsn] : (float)i;
+        app->plot_series[si].ys[i] = ys->data[i * ys_stride];
+        app->plot_series[si].xs[i] = xs ? xs->data[(i % xsn) * xs_stride] : (float)i;
     }
     app->plot_series_count++;
 }
@@ -240,6 +284,51 @@ static Value *bridge_op_clear(int argc, Value **args) {
     g_app->plot_xlabel[0] = '\0';
     g_app->plot_ylabel[0] = '\0';
     return val_new_nil();
+}
+
+/* ── bridge drift: reads slot data directly, no copy ──────────── */
+static Value *bridge_op_drift(int argc, Value **args) {
+    if (!g_app || argc < 1) return val_new_nil();
+    if (args[0]->type != TYPE_VOLUME3D || args[0]->nx != 1 ||
+        args[0]->ny != 1 || args[0]->nz != 1) {
+        err_write("ERROR: (drift n [stride]) expects integer slot index\n");
+        return val_new_nil();
+    }
+    int n = (int)(args[0]->data[0] + 0.5f);
+    if (n < 0 || n >= g_app->num_slots) {
+        err_write("ERROR: drift slot index out of range\n");
+        return val_new_nil();
+    }
+    ImageSlot *s = &g_app->slots[n];
+    if (!s->vol || s->nt < 2) {
+        err_write("ERROR: drift needs 4D slot with >= 2 timepoints\n");
+        return val_new_nil();
+    }
+    int factor = (argc >= 2 && args[1]->type == TYPE_VOLUME3D &&
+                  args[1]->nx == 1 && args[1]->ny == 1 && args[1]->nz == 1)
+                 ? (int)(args[1]->data[0] + 0.5f) : 1;
+    if (factor < 1) factor = 1;
+
+    int nx = s->nx, ny = s->ny, nz = s->nz, nt = s->nt;
+    int64_t n3 = (int64_t)nx * ny * nz;
+    int64_t n_eff = (n3 + factor - 1) / factor;
+    Value *r = val_new_timeseries(nt, s->tr);
+    /* preload frame 0 for fast reference */
+    float *f0 = malloc((size_t)n3 * sizeof(float));
+    for (int64_t i = 0; i < n3; i++) f0[i] = s->vol[i];
+    for (int t = 0; t < nt; t++) {
+        double sum = 0.0;
+        int64_t count = 0;
+        for (int64_t i = 0; i < n3; i += factor) {
+            if (fabsf(f0[i]) < 1e-6f) continue;  /* background */
+            sum += (double)fabsf(s->vol[t * n3 + i] - f0[i]);
+            count++;
+        }
+        r->data[t] = count > 0 ? (float)(sum / (double)count) : 0.0f;
+    }
+    free(f0);
+    snprintf(r->label, sizeof(r->label), "(drift slot %d)", n);
+    return r;
 }
 
 /* ── bridge-aware graph builder ───────────────────────────────── */
@@ -334,6 +423,30 @@ static GraphNode *bridge_graph_hook(const char *op_name, AstNode *ast) {
         g->op = &op_def;
         g->arg_count = 0;
         return g;
+    }
+
+    if (strcmp(op_name, "drift") == 0 && ast->list.count >= 2) {
+        /* if (drift (slot n) ...), extract index → zero-copy bridge op */
+        AstNode *a1 = ast->list.items[1];
+        if (a1->type == AST_LIST && a1->list.count >= 2 &&
+            a1->list.items[0]->type == AST_SYMBOL &&
+            strcmp(a1->list.items[0]->symbol, "slot") == 0) {
+            GraphNode *g = calloc(1, sizeof(GraphNode));
+            g->type = GN_CALL;
+            static OpDef op_def = {"drift", bridge_op_drift, 1, 2};
+            g->op = &op_def;
+            g->args = malloc(sizeof(GraphNode *));
+            g->args[0] = graph_build(a1->list.items[1]); /* slot index */
+            g->arg_count = 1;
+            if (ast->list.count >= 3) {
+                g->args = realloc(g->args, 2 * sizeof(GraphNode *));
+                g->args[1] = graph_build(ast->list.items[2]); /* stride */
+                g->arg_count = 2;
+            }
+            return g;
+        }
+        /* not (slot ...) — fall through to op_drift in ops.c */
+        return NULL;
     }
 
     return NULL;
@@ -503,6 +616,7 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                 {"seed",     "(seed vol4d x y z)",  "extract timeseries at voxel",              "vol4d →timeseries"},
                 {"bandpass", "(bandpass vol4d lo hi)","temporal bandpass filter",               "vol4d timeseries"},
                 {"detrend",  "(detrend vol4d)",     "linear detrend per voxel/ts",              "vol4d timeseries"},
+                {"drift",      "(drift vol4d [stride])","cumulative intensity drift displacement \u2192 timeseries","vol4d"},
                 {"noise",    "(noise nx ny nz sig)","Gaussian noise volume",                    "→vol3d scalar"},
                 {"vol3d",    "(vol3d nx ny nz [val])","constant 3D volume",                     "→vol3d scalar"},
                 {"vol4d",    "(vol4d nx ny nz nt [val])","constant 4D volume",                  "→vol4d scalar"},
@@ -601,7 +715,7 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                     snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
                              "  ── Spatial + Signal ──");
                 const char *sp[] = {"smooth","crop","pad","threshold","mask","mask-int",
-                                    "correlate","seed","bandpass","detrend","noise",NULL};
+                                    "correlate","seed","bandpass","detrend","drift","noise",NULL};
                 for (int j = 0; sp[j]; j++)
                     for (int i = 0; i < n_ops && g_app->repl_out_count < 200; i++)
                         if (strcmp(ops[i].name, sp[j]) == 0)
