@@ -202,7 +202,7 @@ void render_viewport(App *app, int vp_id, Rectangle cell,
                            (Vector2){0,0}, 0, WHITE);
 
             /* green zoom border */
-            DrawRectangleLinesEx(fit, 2, (Color){0,255,0,255});
+            DrawRectangleLinesEx(fit, 2, ORANGE);
 
             /* nav preview (small overview in corner) */
             int pvw = (int)(cell.width * 0.22f), pvh = (int)(cell.height * 0.22f);
@@ -230,7 +230,7 @@ void render_viewport(App *app, int vp_id, Rectangle cell,
                     (float)sub_w / img_w * pv_fit.width,
                     (float)sub_h / img_h * pv_fit.height
                 };
-                DrawRectangleLinesEx(zb, 1, GREEN);
+                DrawRectangleLinesEx(zb, 1, ORANGE);
                 DrawRectangleLinesEx(pv_fit, 1, (Color){100,100,100,255});
             }
         } else {
