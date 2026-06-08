@@ -445,6 +445,8 @@ int main(int argc, char **argv) {
                 app.sidebar_expanded = !app.sidebar_expanded;
                 app.sidebar_w = app.sidebar_expanded ? 240 : 100;
                 app.sidebar_scroll_y = 0;
+                mouse_down = 0;
+                goto skip_sidebar_click;
             }
             /* sidebar drag: start PENDING */
             if (app.num_slots > 1 && mx < app.sidebar_w - 12 && !app.sidebar_at_bottom
@@ -561,6 +563,8 @@ int main(int argc, char **argv) {
             /* skip viewport input while dragging */
             mouse_down = 0;
         }
+
+    skip_sidebar_click:
 
         /* viewport mouse: nav drag + click */
         if (app.num_slots > 0 && mouse_down && app.sidebar_state == 0) {

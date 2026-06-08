@@ -42,6 +42,8 @@ typedef struct {
   char filename[256];
   Texture2D thumbnail;
   int thumb_z, thumb_ct, thumb_sz;
+  double thumb_vmin, thumb_vmax;
+  int thumb_cmap;
 
   /* attachments */
   Attachment segs[MAX_SEGS_PER_SLOT];
@@ -132,11 +134,11 @@ typedef struct {
   char repl_pending_load[1024]; /* deferred load path */
   /* deferred in-memory slot creation (no tmp file) */
   float *repl_pending_vol;
-  int    repl_pending_nx, repl_pending_ny, repl_pending_nz, repl_pending_nt;
+  int repl_pending_nx, repl_pending_ny, repl_pending_nz, repl_pending_nt;
   double repl_pending_dx, repl_pending_dy, repl_pending_dz, repl_pending_tr;
-  int    repl_pending_has_data;
-  char repl_hint[64];           /* autocompletion ghost text */
-  int repl_mode;                /* 0=text output, 1=canvas */
+  int repl_pending_has_data;
+  char repl_hint[64]; /* autocompletion ghost text */
+  int repl_mode;      /* 0=text output, 1=canvas */
 /* plot data */
 #define MAX_PLOT_SERIES 8
 #define MAX_PLOT_POINTS 512

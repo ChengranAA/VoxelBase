@@ -1,6 +1,6 @@
 # VoxelBase <img src="assets/logo.png" width="200" align="right" />
 
-Tiny C99 NIfTI viewer built on raylib + raygui. Fast inspection, teaching, and hacking. Not clinically validated.
+Tiny C99 NIfTI viewer built on raylib. Fast inspection, teaching, and hacking. Not clinically validated.
 
 Tri-view display (axial / sagittal / coronal), 4D timeseries with scrub + chart, contrast sliders, overlay + segmentation support with per-layer opacity/threshold, zoom to crosshair, 5 colormaps, PNG screenshot export.
 

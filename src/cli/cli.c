@@ -24,8 +24,8 @@ static int parse_size(const char *s, int *w, int *h) {
 
 int cli_parse(int argc, char **argv, CliArgs *out) {
     memset(out, 0, sizeof(*out));
-    out->win_w = 1200;
-    out->win_h = 800;
+    out->win_w = 600;
+    out->win_h = 400;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {

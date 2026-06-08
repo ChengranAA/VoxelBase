@@ -1,6 +1,48 @@
 #include <stdio.h>
 #include "app.h"
 
+/* colormaps (mirrors render.c, without duplicating raylib structs) */
+typedef void (*cmap_fn)(uint8_t *, uint8_t *, uint8_t *, float);
+
+static void thumb_gray(uint8_t *r, uint8_t *g, uint8_t *b, float t) {
+    int v = (int)(t * 255.0f);
+    if (v < 0) v = 0; if (v > 255) v = 255;
+    *r = *g = *b = (uint8_t)v;
+}
+static void thumb_hot(uint8_t *r, uint8_t *g, uint8_t *b, float t) {
+    if (t < 0.33f)      { *r = (uint8_t)(t/0.33f*255); *g = 0; *b = 0; }
+    else if (t < 0.66f) { *r = 255; *g = (uint8_t)((t-0.33f)/0.33f*255); *b = 0; }
+    else                { *r = 255; *g = 255; *b = (uint8_t)((t-0.66f)/0.34f*255); }
+}
+static void thumb_jet(uint8_t *r, uint8_t *g, uint8_t *b, float t) {
+    if (t < 0.125f)      { *r = 0; *g = 0; *b = (uint8_t)((t+0.125f)/0.25f*255); }
+    else if (t < 0.375f) { *r = 0; *g = (uint8_t)((t-0.125f)/0.25f*255); *b = 255; }
+    else if (t < 0.625f) { *r = (uint8_t)((t-0.375f)/0.25f*255); *g = 255; *b = (uint8_t)((0.625f-t)/0.25f*255); }
+    else if (t < 0.875f) { *r = 255; *g = (uint8_t)((0.875f-t)/0.25f*255); *b = 0; }
+    else                 { *r = (uint8_t)((1.125f-t)/0.25f*255); *g = 0; *b = 0; }
+}
+static void thumb_bone(uint8_t *r, uint8_t *g, uint8_t *b, float t) {
+    int v = (int)(t * 255.0f);
+    if (v < 0) v = 0; if (v > 255) v = 255;
+    *r = *g = *b = (uint8_t)v;
+    if (t > 0.15f) *g = (uint8_t)(v * 0.85f);
+    if (t > 0.4f)  *b = (uint8_t)(v * 0.7f);
+}
+static void thumb_coolwarm(uint8_t *r, uint8_t *g, uint8_t *b, float t) {
+    if (t < 0.5f) {
+        float s = t * 2.0f;
+        *r = (uint8_t)(s * 59.0f);
+        *g = (uint8_t)(s * 76.0f);
+        *b = (uint8_t)(s * 192.0f + (1.0f - s) * 64.0f);
+    } else {
+        float s = (t - 0.5f) * 2.0f;
+        *r = (uint8_t)(s * 180.0f + (1.0f - s) * 59.0f);
+        *g = (uint8_t)(s * 4.0f + (1.0f - s) * 76.0f);
+        *b = (uint8_t)(s * 38.0f + (1.0f - s) * 192.0f);
+    }
+}
+static cmap_fn thumb_cmaps[] = {thumb_gray, thumb_hot, thumb_jet, thumb_bone, thumb_coolwarm};
+
 void generate_thumbnail(App *app, int slot_idx, int z_slice, int timepoint, int out_sz) {
     ImageSlot *slot = &app->slots[slot_idx];
     if (z_slice < 0) z_slice = 0;
@@ -28,9 +70,10 @@ void generate_thumbnail(App *app, int slot_idx, int z_slice, int timepoint, int 
             float v = slot->vol[base + (size_t)src_row * slot->nx + src_col];
             double t = (v - slot->vmin) / (slot->vmax - slot->vmin + 1e-10);
             if (t < 0) t = 0; if (t > 1) t = 1;
-            uint8_t c = (uint8_t)(t * 255);
             uint8_t *p = rgba + ((size_t)row * thumb_sz + col) * 4;
-            p[0] = p[1] = p[2] = c; p[3] = 255;
+            int ci = slot->cmap >= 0 && slot->cmap < 5 ? slot->cmap : 0;
+            thumb_cmaps[ci](&p[0], &p[1], &p[2], (float)t);
+            p[3] = 255;
         }
     }
     Image img = { .data = rgba, .width = thumb_sz, .height = thumb_sz,
@@ -40,6 +83,9 @@ void generate_thumbnail(App *app, int slot_idx, int z_slice, int timepoint, int 
     slot->thumb_z = z_slice;
     slot->thumb_ct = timepoint;
     slot->thumb_sz = thumb_sz;
+    slot->thumb_vmin = slot->vmin;
+    slot->thumb_vmax = slot->vmax;
+    slot->thumb_cmap = slot->cmap;
     free(slice); free(rgba);
 }
 
@@ -95,10 +141,12 @@ void draw_sidebar(App *app, Rectangle bounds) {
         if (tn_z < 0) tn_z = 0;
         if (tn_z >= slot->nz) tn_z = slot->nz - 1;
 
-        /* regenerate if Z, timepoint, or collapsed/expanded size changed */
+        /* regenerate if Z, timepoint, size, contrast, or cmap changed */
         if (slot->thumbnail.id == 0 ||
             slot->thumb_z != tn_z || slot->thumb_ct != tn_ct ||
-            slot->thumb_sz != thumb_sz) {
+            slot->thumb_sz != thumb_sz ||
+            slot->thumb_vmin != slot->vmin || slot->thumb_vmax != slot->vmax ||
+            slot->thumb_cmap != slot->cmap) {
             generate_thumbnail(app, i, tn_z, tn_ct, thumb_sz);
         }
 
