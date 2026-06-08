@@ -1,0 +1,7 @@
+# vbl.plugin
+name        = vbl
+hooks       = init, frame, keyboard, mouse_click
+panels      = VBL Console, VBL Trace
+params      =
+depends     =
+conflicts   =

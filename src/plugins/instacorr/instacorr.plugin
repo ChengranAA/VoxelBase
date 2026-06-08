@@ -1,0 +1,6 @@
+# instacorr.plugin
+name        = instacorr
+hooks       = keyboard, mouse_click, slice_override[exclusive], render_overlay[exclusive]
+params      = clip_fraction, smooth_fwhm
+depends     =
+conflicts   = mcp

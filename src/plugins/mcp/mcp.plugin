@@ -1,0 +1,6 @@
+# mcp.plugin
+name        = mcp
+hooks       = init, frame, keyboard, shutdown
+params      =
+depends     =
+conflicts   = instacorr

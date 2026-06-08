@@ -1,0 +1,71 @@
+;; VBL test suite — exercises all operators and type safety
+
+;; ── Constructors ──
+(def a (vol3d 8 8 8 0))
+(def b (vol3d 8 8 8 1))
+(def n (noise 8 8 8 5))
+(def id (affine))
+
+;; ── Arithmetic (strict shape) ──
+(print (+ a b))
+;; (print (+ a 1))   ;; should ERROR: shape mismatch
+(print (- b a))
+(print (* b 1))      ;; scalar * volume = shape mismatch expected
+(print (/ b 1))
+
+;; ── Broadcast ops ──
+(print (bc+ a 1))
+(print (bc- b 0.5))
+(print (bc* n 2))
+(print (bc/ n 2))
+
+;; ── Stats ──
+(print (mean n))
+(print (stdev n))
+(print (min n))
+(print (max n))
+(print (sum n))
+
+;; ── Spatial ──
+(print (smooth n 1.5))
+(print (crop n 2 6 2 6 2 6))
+(print (pad n 12 12 12 2 2 2))
+
+;; ── Views ──
+(def s0 (slice n 0 4))
+(print s0)
+(def s1 (slice n 1 4))
+(print s1)
+(print (voxel n 4 4 4))
+
+;; ── View mutation ──
+(bc+ s0 100)
+(print n)           ;; s0's parent should show z=4 shifted
+
+;; ── Copy (independent) ──
+(def c (copy n))
+(bc+ c -100)
+(print n)           ;; original unchanged
+(print c)           ;; copy changed
+
+;; ── Comparison ──
+(print (gt n 0))
+(print (lt n 0))
+(print (and (gt n 0) (lt n 2)))
+(print (or (gt n 2) (lt n -2)))
+
+;; ── Affine ──
+(def t (translate 1 2 3))
+(def r (rotate 90 2))
+(def s (scale 2 2 2))
+(print (* t r))
+(print (* t s))
+(print (apply t a))
+
+;; ── Type errors (should print ERROR but not crash) ──
+;; (print (seed a 0 0 0))      ;; seed expects volume4d
+;; (print (tslice a 0))          ;; tslice expects volume4d
+;; (print (apply a a))           ;; apply expects affine
+
+(print "VBL test suite complete")
+exit
