@@ -210,6 +210,15 @@ Value *op_mean(int c, Value **a) {
     Value *v = a[0];
     int64_t n3 = (int64_t)v->nx*v->ny*v->nz;
     int nt = v->nt > 0 ? v->nt : 1;
+    /* vol3d → global scalar */
+    if (v->type == TYPE_VOLUME3D) {
+        Value *r = val_new_volume3d(1, 1, 1, 1.0, 1.0, 1.0);
+        double sum = 0.0;
+        for (int64_t i = 0; i < n3; i++) sum += (double)v->data[i];
+        r->data[0] = (float)(sum / (double)n3);
+        snprintf(r->label, sizeof(r->label), "(mean %s)", v->label);
+        return r;
+    }
     Value *r = val_new_volume3d(v->nx,v->ny,v->nz, v->dx,v->dy,v->dz);
 
     if (g_pool && n3 > 10000) {
@@ -254,6 +263,18 @@ Value *op_stdev(int c, Value **a) {
     Value *v = a[0];
     int64_t n3 = (int64_t)v->nx * v->ny * v->nz;
     int nt = v->nt > 0 ? v->nt : 1;
+    if (v->type == TYPE_VOLUME3D) {
+        Value *r = val_new_volume3d(1, 1, 1, 1.0, 1.0, 1.0);
+        double sum = 0.0, sum2 = 0.0;
+        for (int64_t i = 0; i < n3; i++) {
+            float x = v->data[i];
+            sum += x; sum2 += (double)x * x;
+        }
+        double var = sum2 / n3 - (sum / n3) * (sum / n3);
+        r->data[0] = (float)(var > 0 ? sqrt(var) : 0);
+        snprintf(r->label, sizeof(r->label), "(stdev %s)", v->label);
+        return r;
+    }
     Value *r = val_new_volume3d(v->nx, v->ny, v->nz, v->dx, v->dy, v->dz);
     for (int64_t i = 0; i < n3; i++) {
         double sum = 0.0, sum2 = 0.0;
@@ -276,6 +297,15 @@ Value *op_min(int c, Value **a) {
     Value *v = a[0];
     int64_t n3 = (int64_t)v->nx * v->ny * v->nz;
     int nt = v->nt > 0 ? v->nt : 1;
+    if (v->type == TYPE_VOLUME3D) {
+        Value *r = val_new_volume3d(1, 1, 1, 1.0, 1.0, 1.0);
+        float mn = v->data[0];
+        for (int64_t i = 1; i < n3; i++)
+            if (v->data[i] < mn) mn = v->data[i];
+        r->data[0] = mn;
+        snprintf(r->label, sizeof(r->label), "(min %s)", v->label);
+        return r;
+    }
     Value *r = val_new_volume3d(v->nx, v->ny, v->nz, v->dx, v->dy, v->dz);
     for (int64_t i = 0; i < n3; i++) {
         float mn = v->data[i];
@@ -297,6 +327,15 @@ Value *op_max(int c, Value **a) {
     Value *v = a[0];
     int64_t n3 = (int64_t)v->nx * v->ny * v->nz;
     int nt = v->nt > 0 ? v->nt : 1;
+    if (v->type == TYPE_VOLUME3D) {
+        Value *r = val_new_volume3d(1, 1, 1, 1.0, 1.0, 1.0);
+        float mx = v->data[0];
+        for (int64_t i = 1; i < n3; i++)
+            if (v->data[i] > mx) mx = v->data[i];
+        r->data[0] = mx;
+        snprintf(r->label, sizeof(r->label), "(max %s)", v->label);
+        return r;
+    }
     Value *r = val_new_volume3d(v->nx, v->ny, v->nz, v->dx, v->dy, v->dz);
     for (int64_t i = 0; i < n3; i++) {
         float mx = v->data[i];
@@ -318,6 +357,14 @@ Value *op_sum(int c, Value **a) {
     Value *v = a[0];
     int64_t n3 = (int64_t)v->nx * v->ny * v->nz;
     int nt = v->nt > 0 ? v->nt : 1;
+    if (v->type == TYPE_VOLUME3D) {
+        Value *r = val_new_volume3d(1, 1, 1, 1.0, 1.0, 1.0);
+        double s = 0.0;
+        for (int64_t i = 0; i < n3; i++) s += (double)v->data[i];
+        r->data[0] = (float)s;
+        snprintf(r->label, sizeof(r->label), "(sum %s)", v->label);
+        return r;
+    }
     Value *r = val_new_volume3d(v->nx, v->ny, v->nz, v->dx, v->dy, v->dz);
     for (int64_t i = 0; i < n3; i++) {
         double s = 0.0;

@@ -92,3 +92,18 @@ install: app
 	@echo "CLI     → /usr/local/bin/voxelbase"
 
 .PHONY: all clean app install
+
+# Standalone VBL worker shell (no GUI, for testing)
+VBL_SRCS = src/plugins/vbl/worker/main.c \
+           src/plugins/vbl/worker/parser.c \
+           src/plugins/vbl/worker/types.c \
+           src/plugins/vbl/worker/ops.c \
+           src/plugins/vbl/worker/graph.c \
+           src/plugins/vbl/worker/env.c \
+           src/plugins/vbl/worker/pool.c
+VBL_OBJS = $(VBL_SRCS:src/%.c=build/%.o)
+VBL_CFLAGS = $(CFLAGS:-DVXB_INTEGRATED=) -DVXB_STANDALONE
+
+vbl-worker: $(VBL_OBJS)
+	@echo "  LINK  build/vbl-worker"
+	@$(CC) $(VBL_CFLAGS) $(VBL_OBJS) $(LDFLAGS) -o build/vbl-worker
