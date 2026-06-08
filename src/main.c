@@ -25,6 +25,8 @@ void draw_sidebar(App *app, Rectangle bounds);
 int add_slot_from_file(App *app, const char *path);
 int add_slot_from_pending(App *app);
 int add_attachment_to_slot(App *app, int slot_idx, const char *path, int is_seg);
+void progressive_poll(App *app);
+void progressive_cleanup_slot(ImageSlot *slot);
 void save_screenshot(App *app);
 
 /* ====================================================================
@@ -354,10 +356,6 @@ int main(int argc, char **argv) {
     app.dirty_slices = 1; /* ensure first frame renders */
     if (args.out_dir) snprintf(app.out_dir, sizeof(app.out_dir), "%s", args.out_dir);
 
-    if (load_slots(&app, &args) != 0) {
-        /* empty start — ok, user can drag-drop */
-    }
-
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(app.win_w, app.win_h, "VoxelBase");
     SetWindowMinSize(600, 400);
@@ -399,6 +397,8 @@ int main(int argc, char **argv) {
         /* always track window size */
         app.win_w = GetScreenWidth();
         app.win_h = GetScreenHeight();
+
+        progressive_poll(&app);
 
         /* drag-and-drop — buffer paths */
         if (IsFileDropped()) {
@@ -574,7 +574,7 @@ int main(int argc, char **argv) {
         /* chart click-scrub: click on timeseries to set timepoint */
         if (app.num_slots > 0 && mouse_down && app.active_panel_tab == 1) {
             ImageSlot *cs_ts = &app.slots[app.active_slot];
-            if (cs_ts->nt > 1 && cs_ts->ts_valid) {
+            if (cs_ts->nt > 1 && cs_ts->loaded_t_count >= cs_ts->nt && cs_ts->ts_valid) {
                 /* chart is at bottom of panel: anchored to panel inner bottom */
                 int chart_x = (int)cell_panel.x + 12;
                 int chart_w = (int)cell_panel.width - 24;
@@ -754,6 +754,7 @@ int main(int argc, char **argv) {
         /* process pending slot removal */
         if (app.pending_remove_slot >= 0 && app.pending_remove_slot < app.num_slots) {
             int s = app.pending_remove_slot;
+            progressive_cleanup_slot(&app.slots[s]);
             nifti_image_free(app.slots[s].nim);
             free(app.slots[s].vol);
             if (app.slots[s].thumbnail.id > 0) UnloadTexture(app.slots[s].thumbnail);
@@ -834,6 +835,21 @@ int main(int argc, char **argv) {
         }
     }
 
+    for (int s = 0; s < app.num_slots; s++) {
+        progressive_cleanup_slot(&app.slots[s]);
+        nifti_image_free(app.slots[s].nim);
+        free(app.slots[s].vol);
+        free(app.slots[s].ts_data);
+        if (app.slots[s].thumbnail.id > 0) UnloadTexture(app.slots[s].thumbnail);
+        for (int ai = 0; ai < app.slots[s].num_segs; ai++) {
+            nifti_image_free(app.slots[s].segs[ai].nim);
+            free(app.slots[s].segs[ai].vol);
+        }
+        for (int ai = 0; ai < app.slots[s].num_ovls; ai++) {
+            nifti_image_free(app.slots[s].ovls[ai].nim);
+            free(app.slots[s].ovls[ai].vol);
+        }
+    }
     vbl_bridge_shutdown();
     CloseWindow();
     return 0;

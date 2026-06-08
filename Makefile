@@ -91,7 +91,13 @@ install: app
 	@echo "Installed → /Applications/VoxelBase.app"
 	@echo "CLI     → /usr/local/bin/voxelbase"
 
-.PHONY: all clean app install
+test-progressive: test/test_progressive_load.c src/load/loader.c
+	@mkdir -p build/test
+	@echo "  TEST  $@"
+	@$(CC) -O0 -g -Isrc -Iinclude -I. -Isrc/plugins/vbl $(shell pkg-config --cflags raylib) test/test_progressive_load.c src/load/loader.c -lm -lz -lpthread -o build/test/test_progressive_load
+	@build/test/test_progressive_load
+
+.PHONY: all clean app install test-progressive
 
 # Standalone VBL worker shell (no GUI, for testing)
 VBL_SRCS = src/plugins/vbl/worker/main.c \

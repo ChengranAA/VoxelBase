@@ -42,7 +42,9 @@ void extract_slices(App *app) {
     int eff_cy = cs->cross_sync ? app->cy : cs->cy;
     int eff_cz = cs->cross_sync ? app->cz : cs->cz;
 
-    /* 4D: offset into current timepoint */
+    /* 4D: offset into a loaded timepoint only */
+    int available_t = cs->loaded_t_count > 0 ? cs->loaded_t_count : (cs->nt > 0 ? cs->nt : 1);
+    if (cs->ct >= available_t) cs->ct = 0;
     size_t toff = cs->nt > 1 ? (size_t)cs->ct * nx * ny * nz : 0;
     const float *vol = cs->vol + toff;
 
@@ -112,6 +114,15 @@ void extract_seg_slices(App *app) {
 void extract_timeseries(App *app) {
     ImageSlot *cs = &app->slots[app->active_slot];
     if (cs->nt <= 1) return;
+    int available_t = cs->loaded_t_count > 0 ? cs->loaded_t_count : cs->nt;
+    if (available_t < 1) available_t = 1;
+    if (available_t < cs->nt) {
+        free(cs->ts_data);
+        cs->ts_data = NULL;
+        cs->ts_valid = 0;
+        cs->ct = 0;
+        return;
+    }
     if (!cs->ts_data) {
         cs->ts_data = malloc((size_t)cs->nt * sizeof(float));
         if (!cs->ts_data) { cs->ts_valid = 0; return; }

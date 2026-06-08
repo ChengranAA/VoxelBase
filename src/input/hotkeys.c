@@ -59,6 +59,10 @@ void process_hotkeys(App *app) {
     if (app->active_panel_tab == 5) return;
 
     ImageSlot *cs = &app->slots[app->active_slot];
+    if (cs->loading && cs->ct != 0) {
+        cs->ct = 0;
+        app->dirty_slices = 1;
+    }
 
     int old_cx = app->cx, old_cy = app->cy, old_cz = app->cz;
     int step = 1;
@@ -193,17 +197,21 @@ void process_hotkeys(App *app) {
 
     /* [ and ]: 4D time scrubbing (no Super) */
     int nosuper = !IsKeyDown(KEY_LEFT_SUPER) && !IsKeyDown(KEY_RIGHT_SUPER);
-    if (cs->nt > 1 && nosuper) {
+    int available_t = cs->loaded_t_count > 0 ? cs->loaded_t_count : (cs->nt > 0 ? cs->nt : 1);
+    if (cs->nt > 1 && available_t > 1 && nosuper) {
         if (IsKeyPressed(KEY_LEFT_BRACKET) || IsKeyPressedRepeat(KEY_LEFT_BRACKET)) {
-            int ts = (cs->nt + 99) / 100; if (ts < 1) ts = 1;
-            cs->ct -= ts; if (cs->ct < 0) cs->ct += cs->nt;
+            int ts = (available_t + 99) / 100; if (ts < 1) ts = 1;
+            cs->ct -= ts; if (cs->ct < 0) cs->ct += available_t;
             app->dirty_slices = 1;
         }
         if (IsKeyPressed(KEY_RIGHT_BRACKET) || IsKeyPressedRepeat(KEY_RIGHT_BRACKET)) {
-            int ts = (cs->nt + 99) / 100; if (ts < 1) ts = 1;
-            cs->ct += ts; if (cs->ct >= cs->nt) cs->ct -= cs->nt;
+            int ts = (available_t + 99) / 100; if (ts < 1) ts = 1;
+            cs->ct += ts; if (cs->ct >= available_t) cs->ct -= available_t;
             app->dirty_slices = 1;
         }
+    } else if (cs->nt > 1 && cs->ct != 0) {
+        cs->ct = 0;
+        app->dirty_slices = 1;
     }
 
     /* Super+B: toggle sidebar */
@@ -239,7 +247,9 @@ void process_hotkeys(App *app) {
         } else {
             int delta = (mw > 0) ? 1 : -1;
             if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
-                if (cs->nt > 1) cs->ct = (cs->ct + delta + cs->nt) % cs->nt;
+                int available_t2 = cs->loaded_t_count > 0 ? cs->loaded_t_count : (cs->nt > 0 ? cs->nt : 1);
+                if (cs->nt > 1 && available_t2 > 1) cs->ct = (cs->ct + delta + available_t2) % available_t2;
+                else if (cs->nt > 1) cs->ct = 0;
             } else {
                 int s = step_size(app->focus == 1 ? cs->nx : app->focus == 2 ? cs->ny : cs->nz);
                 int nx = app->cx, ny = app->cy, nz = app->cz;

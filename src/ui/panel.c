@@ -623,7 +623,19 @@ void draw_panel(App *app, Rectangle bounds) {
         GuiLabel((Rectangle){inner.x, y, inner.width, lh}, buf); y += lh + 2;
 
         if (cs->nt > 1) {
+            int available_t = cs->loaded_t_count > 0 ? cs->loaded_t_count : cs->nt;
             snprintf(buf, sizeof(buf), "TR: %.3f s   Time: %d / %d", cs->tr, cs->ct + 1, cs->nt);
+            GuiLabel((Rectangle){inner.x, y, inner.width, lh}, buf); y += lh + 2;
+            if (available_t < cs->nt) {
+                snprintf(buf, sizeof(buf), "Loaded: %d / %d timepoints", available_t, cs->nt);
+                GuiLabel((Rectangle){inner.x, y, inner.width, lh}, buf); y += lh + 2;
+            }
+        }
+
+        if (cs->progressive || cs->loading || cs->load_failed) {
+            const char *status = cs->load_status[0] ? cs->load_status :
+                                 (cs->loading ? "loading full 4D" : cs->load_failed ? "load failed" : "full 4D ready");
+            snprintf(buf, sizeof(buf), "Status: %s", status);
             GuiLabel((Rectangle){inner.x, y, inner.width, lh}, buf); y += lh + 2;
         }
 
@@ -690,11 +702,13 @@ void draw_panel(App *app, Rectangle bounds) {
         y += 22;
 
         /* Voxel value at crosshair */
+        int available_t = cs->loaded_t_count > 0 ? cs->loaded_t_count : (cs->nt > 0 ? cs->nt : 1);
+        if (cs->ct >= available_t) cs->ct = 0;
         size_t idx = (size_t)cs->ct * cs->nx * cs->ny * cs->nz
                      + (size_t)eff_cx
                      + (size_t)eff_cy * cs->nx
                      + (size_t)eff_cz * cs->nx * cs->ny;
-        if (idx < (size_t)cs->nx * cs->ny * cs->nz * (cs->nt > 0 ? cs->nt : 1)) {
+        if (idx < (size_t)cs->nx * cs->ny * cs->nz * (size_t)available_t) {
             snprintf(buf, sizeof(buf), "Value: %.4f", cs->vol[idx]);
             GuiLabel((Rectangle){inner.x, y, inner.width, lh}, buf); y += lh + 4;
         }
@@ -1055,7 +1069,7 @@ void draw_panel(App *app, Rectangle bounds) {
     } /* switch */
 
     /* ── Timeseries chart at bottom of Cursor tab ── */
-    if (app->active_panel_tab == 1 && cs->nt > 1 && cs->ts_valid && cs->ts_data) {
+    if (app->active_panel_tab == 1 && cs->nt > 1 && cs->loaded_t_count >= cs->nt && cs->ts_valid && cs->ts_data) {
         int margin = 6, title_h = 14;
         int cw = (int)inner.width - 8, ch = 90;
         int chart_bottom = (int)(inner.y + inner.height);

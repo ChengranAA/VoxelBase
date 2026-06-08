@@ -3,6 +3,7 @@
 
 #include "nifti/nifti_image.h"
 #include "raylib.h"
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,17 @@
 #define MAX_SLOTS 10
 #define MAX_SEGS_PER_SLOT 3
 #define MAX_OVLS_PER_SLOT 3
+
+typedef struct ProgressiveJob {
+  pthread_t thread;
+  pthread_mutex_t mutex;
+  int completed;
+  int success;
+  nifti_image *full_nim;
+  float *full_vol;
+  char path[1024];
+  char error[128];
+} ProgressiveJob;
 
 typedef struct {
   nifti_image *nim;
@@ -37,6 +49,16 @@ typedef struct {
   int ct;
   float *ts_data;
   int ts_valid, ts_x, ts_y, ts_z;
+
+  /* progressive large-4D loading */
+  int progressive;
+  int loading;
+  int full_ready;
+  int load_failed;
+  int loaded_t_count;
+  char source_path[1024];
+  char load_status[128];
+  ProgressiveJob *progressive_job;
 
   /* sidebar */
   char filename[256];

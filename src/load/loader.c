@@ -1,9 +1,26 @@
 #include <float.h>
 #include <stdio.h>
+#include <strings.h>
 #include "app.h"
 #include "cli/cli.h"
 
 #define NBINS 4096
+#define PROGRESSIVE_THRESHOLD_BYTES (512ULL * 1024ULL * 1024ULL)
+
+int voxelbase_is_gz_path(const char *path) {
+    size_t len = path ? strlen(path) : 0;
+    return len >= 3 && strcasecmp(path + len - 3, ".gz") == 0;
+}
+
+size_t voxelbase_raw_data_bytes(const nifti_image *nim) {
+    if (!nim || nim->nvox <= 0 || nim->nbyper <= 0) return 0;
+    return (size_t)nim->nvox * (size_t)nim->nbyper;
+}
+
+int voxelbase_should_progressive_load(const nifti_image *nim, const char *path) {
+    return nim && nim->nt > 1 && !voxelbase_is_gz_path(path) &&
+           voxelbase_raw_data_bytes(nim) >= PROGRESSIVE_THRESHOLD_BYTES;
+}
 
 static float *convert_volume_float32(nifti_image *nim, ImageSlot *slot) {
     int64_t nvox_total = nim->nvox;
@@ -54,9 +71,12 @@ static float *convert_volume_float32(nifti_image *nim, ImageSlot *slot) {
     } else {
         /* generic fallback */
         for (int64_t i = 0; i < nvox_total; i++) {
-            float v = (float)nifti_image_get_voxel(nim, i % slot->nx,
-                (i / slot->nx) % slot->ny,
-                (i / ((int64_t)slot->nx * slot->ny)) % slot->nz, 0);
+            int64_t nvox_per_vol = (int64_t)slot->nx * slot->ny * slot->nz;
+            int64_t r = nvox_per_vol > 0 ? i % nvox_per_vol : i;
+            int64_t t = nvox_per_vol > 0 ? i / nvox_per_vol : 0;
+            float v = (float)nifti_image_get_voxel(nim, r % slot->nx,
+                (r / slot->nx) % slot->ny,
+                (r / ((int64_t)slot->nx * slot->ny)) % slot->nz, t);
             dst[i] = v;
             if (i < nvox_t0) { if (v < lo) lo = v; if (v > hi) hi = v; }
         }
@@ -96,6 +116,203 @@ static float *convert_volume_float32(nifti_image *nim, ImageSlot *slot) {
     return dst;
 }
 
+static void init_slot_metadata(ImageSlot *slot, nifti_image *nim, const char *path) {
+    slot->nim = nim;
+    slot->nx  = (int)nim->nx;
+    slot->ny  = (int)nim->ny;
+    slot->nz  = (int)nim->nz;
+    slot->nt  = (int)nim->nt;
+    slot->dx  = nim->dx;
+    slot->dy  = nim->dy;
+    slot->dz  = nim->dz;
+    slot->tr  = nim->dt;
+    slot->cmap = 0;
+    slot->ct   = 0;
+    slot->zoom = 1.0;
+    slot->zoom_sync = 0;
+    slot->cx = slot->nx / 2;
+    slot->cy = slot->ny / 2;
+    slot->cz = slot->nz / 2;
+    slot->cross_sync = 1;
+    slot->loaded_t_count = slot->nt > 0 ? slot->nt : 1;
+    slot->full_ready = 1;
+    snprintf(slot->source_path, sizeof(slot->source_path), "%s", path ? path : "");
+
+    const char *fn = path ? strrchr(path, '/') : NULL;
+    fn = fn ? fn + 1 : (path ? path : "[image]");
+    snprintf(slot->filename, sizeof(slot->filename), "%s", fn);
+}
+
+static int read_first_volume_raw(nifti_image *nim, void **raw_out) {
+    if (!nim || !nim->iname || nim->nx <= 0 || nim->ny <= 0 || nim->nz <= 0 || nim->nbyper <= 0)
+        return -1;
+    size_t n3 = (size_t)nim->nx * (size_t)nim->ny * (size_t)nim->nz;
+    size_t bytes = n3 * (size_t)nim->nbyper;
+    void *raw = malloc(bytes);
+    if (!raw) return -1;
+
+    FILE *fp = fopen(nim->iname, "rb");
+    if (!fp) { free(raw); return -1; }
+    if (fseeko(fp, (off_t)nim->iname_offset, SEEK_SET) != 0) {
+        fclose(fp); free(raw); return -1;
+    }
+    size_t got = fread(raw, 1, bytes, fp);
+    fclose(fp);
+    if (got != bytes) { free(raw); return -1; }
+
+    if (nim->byteorder != nifti_short_order() && nim->swapsize > 0)
+        nifti_swap_Nbytes(n3, nim->swapsize, raw);
+
+    *raw_out = raw;
+    return 0;
+}
+
+static float *convert_first_volume_float32(nifti_image *nim, ImageSlot *slot) {
+    void *raw = NULL;
+    if (read_first_volume_raw(nim, &raw) != 0) return NULL;
+
+    nifti_image view = *nim;
+    view.nt = 1;
+    view.nvox = (int64_t)slot->nx * slot->ny * slot->nz;
+    view.data = raw;
+
+    float *vol = convert_volume_float32(&view, slot);
+    free(raw);
+    return vol;
+}
+
+static void *progressive_worker_main(void *arg) {
+    ProgressiveJob *job = (ProgressiveJob *)arg;
+    nifti_image *nim = nifti_image_load(job->path, 1);
+    float *vol = NULL;
+    int success = 0;
+    char err[128] = "background load failed";
+
+    if (!nim || !nim->data) {
+        snprintf(err, sizeof(err), "background full load failed");
+    } else {
+        ImageSlot tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        init_slot_metadata(&tmp, nim, job->path);
+        vol = convert_volume_float32(nim, &tmp);
+        if (vol) success = 1;
+        else snprintf(err, sizeof(err), "background conversion failed");
+    }
+
+    pthread_mutex_lock(&job->mutex);
+    job->success = success;
+    if (success) {
+        job->full_nim = nim;
+        job->full_vol = vol;
+    } else {
+        if (nim) nifti_image_free(nim);
+        free(vol);
+        snprintf(job->error, sizeof(job->error), "%s", err);
+    }
+    job->completed = 1;
+    pthread_mutex_unlock(&job->mutex);
+    return NULL;
+}
+
+static int start_progressive_worker(ImageSlot *slot, const char *path) {
+    ProgressiveJob *job = (ProgressiveJob *)calloc(1, sizeof(*job));
+    if (!job) return -1;
+    pthread_mutex_init(&job->mutex, NULL);
+    snprintf(job->path, sizeof(job->path), "%s", path);
+    if (pthread_create(&job->thread, NULL, progressive_worker_main, job) != 0) {
+        pthread_mutex_destroy(&job->mutex);
+        free(job);
+        return -1;
+    }
+    slot->progressive_job = job;
+    slot->progressive = 1;
+    slot->loading = 1;
+    slot->full_ready = 0;
+    slot->load_failed = 0;
+    slot->loaded_t_count = 1;
+    snprintf(slot->load_status, sizeof(slot->load_status), "loading full 4D in background");
+    return 0;
+}
+
+static int load_slot_progressive(ImageSlot *slot, const char *path) {
+    nifti_image *nim = nifti_image_load(path, 0);
+    if (!nim) return -1;
+    init_slot_metadata(slot, nim, path);
+
+    slot->vol = convert_first_volume_float32(nim, slot);
+    if (!slot->vol) {
+        nifti_image_free(nim);
+        return -1;
+    }
+
+    if (start_progressive_worker(slot, path) != 0) {
+        slot->progressive = 1;
+        slot->loading = 0;
+        slot->full_ready = 0;
+        slot->load_failed = 1;
+        slot->loaded_t_count = 1;
+        snprintf(slot->load_status, sizeof(slot->load_status), "background load start failed");
+    }
+    return 0;
+}
+
+void progressive_poll(App *app) {
+    if (!app) return;
+    for (int i = 0; i < app->num_slots; i++) {
+        ImageSlot *slot = &app->slots[i];
+        ProgressiveJob *job = slot->progressive_job;
+        if (!job) continue;
+
+        pthread_mutex_lock(&job->mutex);
+        int completed = job->completed;
+        int success = job->success;
+        pthread_mutex_unlock(&job->mutex);
+        if (!completed) continue;
+
+        pthread_join(job->thread, NULL);
+        if (success) {
+            nifti_image_free(slot->nim);
+            free(slot->vol);
+            free(slot->ts_data);
+            slot->ts_data = NULL;
+            slot->ts_valid = 0;
+            slot->nim = job->full_nim;
+            slot->vol = job->full_vol;
+            slot->loaded_t_count = slot->nt > 0 ? slot->nt : 1;
+            slot->loading = 0;
+            slot->full_ready = 1;
+            slot->load_failed = 0;
+            snprintf(slot->load_status, sizeof(slot->load_status), "full 4D ready");
+            if (slot->ct >= slot->nt) slot->ct = 0;
+            app->dirty_slices = 1;
+            app->dirty_contrast = 1;
+            app->force_texture_recreate = 1;
+        } else {
+            slot->loading = 0;
+            slot->full_ready = 0;
+            slot->load_failed = 1;
+            slot->loaded_t_count = 1;
+            slot->ct = 0;
+            snprintf(slot->load_status, sizeof(slot->load_status), "%s", job->error[0] ? job->error : "background load failed");
+            app->dirty_slices = 1;
+        }
+        pthread_mutex_destroy(&job->mutex);
+        free(job);
+        slot->progressive_job = NULL;
+    }
+}
+
+void progressive_cleanup_slot(ImageSlot *slot) {
+    if (!slot || !slot->progressive_job) return;
+    ProgressiveJob *job = slot->progressive_job;
+    pthread_join(job->thread, NULL);
+    if (job->full_nim) nifti_image_free(job->full_nim);
+    free(job->full_vol);
+    pthread_mutex_destroy(&job->mutex);
+    free(job);
+    slot->progressive_job = NULL;
+}
+
 int load_slots(App *app, CliArgs *args) {
     app->num_slots = 0;
 
@@ -105,40 +322,35 @@ int load_slots(App *app, CliArgs *args) {
         ImageSlot *slot = &app->slots[app->num_slots];
         memset(slot, 0, sizeof(*slot));
 
-        nifti_image *nim = nifti_image_load(args->file_paths[i], 1);
-        if (!nim) {
+        nifti_image *probe = nifti_image_load(args->file_paths[i], 0);
+        if (!probe) {
             fprintf(stderr, "ERROR: cannot load %s\n", args->file_paths[i]);
             continue;
         }
 
-        slot->nim = nim;
-        slot->nx  = (int)nim->nx;
-        slot->ny  = (int)nim->ny;
-        slot->nz  = (int)nim->nz;
-        slot->nt  = (int)nim->nt;
-        slot->dx  = nim->dx;
-        slot->dy  = nim->dy;
-        slot->dz  = nim->dz;
-        slot->tr  = nim->dt;
-        slot->cmap = 0;
-        slot->ct   = 0;
-        slot->zoom = 1.0;
-        slot->zoom_sync = 0;
-        slot->cx = slot->nx / 2;
-        slot->cy = slot->ny / 2;
-        slot->cz = slot->nz / 2;
-        slot->cross_sync = 1;  /* default: follow global */
-
-        /* basename for display */
         const char *fn = strrchr(args->file_paths[i], '/');
         fn = fn ? fn + 1 : args->file_paths[i];
-        snprintf(slot->filename, sizeof(slot->filename), "%s", fn);
 
-        slot->vol = convert_volume_float32(nim, slot);
-        if (!slot->vol) {
-            fprintf(stderr, "ERROR: conversion failed for %s\n", fn);
-            nifti_image_free(nim);
-            continue;
+        if (voxelbase_should_progressive_load(probe, args->file_paths[i])) {
+            nifti_image_free(probe);
+            if (load_slot_progressive(slot, args->file_paths[i]) != 0) {
+                fprintf(stderr, "ERROR: progressive load failed for %s\n", fn);
+                continue;
+            }
+        } else {
+            nifti_image_free(probe);
+            nifti_image *nim = nifti_image_load(args->file_paths[i], 1);
+            if (!nim) {
+                fprintf(stderr, "ERROR: cannot load %s\n", args->file_paths[i]);
+                continue;
+            }
+            init_slot_metadata(slot, nim, args->file_paths[i]);
+            slot->vol = convert_volume_float32(nim, slot);
+            if (!slot->vol) {
+                fprintf(stderr, "ERROR: conversion failed for %s\n", fn);
+                nifti_image_free(nim);
+                continue;
+            }
         }
 
         app->num_slots++;
@@ -246,29 +458,26 @@ int add_slot_from_file(App *app, const char *path) {
     ImageSlot *slot = &app->slots[app->num_slots];
     memset(slot, 0, sizeof(*slot));
 
+    nifti_image *probe = nifti_image_load(path, 0);
+    if (!probe) return -1;
+    if (voxelbase_should_progressive_load(probe, path)) {
+        nifti_image_free(probe);
+        if (load_slot_progressive(slot, path) != 0) return -1;
+        app->num_slots++;
+#ifndef NDEBUG
+        fprintf(stderr, "Dropped progressive: %s  %dx%dx%dx%d\n", slot->filename, slot->nx, slot->ny, slot->nz, slot->nt);
+#endif
+        return app->num_slots - 1;
+    }
+    nifti_image_free(probe);
+
     nifti_image *nim = nifti_image_load(path, 1);
     if (!nim) return -1;
 
-    slot->nim = nim;
-    slot->nx  = (int)nim->nx;
-    slot->ny  = (int)nim->ny;
-    slot->nz  = (int)nim->nz;
-    slot->nt  = (int)nim->nt;
-    slot->dx  = nim->dx;
-    slot->dy  = nim->dy;
-    slot->dz  = nim->dz;
-    slot->tr  = nim->dt;
-    slot->cmap = 0;
-    slot->zoom = 1.0;
-    slot->zoom_sync = 0;
-    slot->cx = slot->nx / 2;
-    slot->cy = slot->ny / 2;
-    slot->cz = slot->nz / 2;
-    slot->cross_sync = 1;  /* default: follow global */
+    init_slot_metadata(slot, nim, path);
 
     const char *fn = strrchr(path, '/');
     fn = fn ? fn + 1 : path;
-    snprintf(slot->filename, sizeof(slot->filename), "%s", fn);
 
     int64_t nvox = nim->nvox;
     float *vol = (float *)malloc((size_t)nvox * sizeof(float));
@@ -363,6 +572,9 @@ int add_slot_from_pending(App *app) {
     slot->cy = slot->ny / 2;
     slot->cz = slot->nz / 2;
     slot->cross_sync = 1;
+    slot->loaded_t_count = slot->nt > 0 ? slot->nt : 1;
+    slot->full_ready = 1;
+    snprintf(slot->load_status, sizeof(slot->load_status), "full volume ready");
     snprintf(slot->filename, sizeof(slot->filename), "[VBL]");
 
     int64_t nvox = (int64_t)slot->nx * slot->ny * slot->nz * (slot->nt > 0 ? slot->nt : 1);

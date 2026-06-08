@@ -96,6 +96,10 @@ static Value *bridge_op_slot(int argc, Value **args) {
         err_write("ERROR: slot has no volume data\n");
         return val_new_nil();
     }
+    if (s->nt > 1 && s->loaded_t_count < s->nt && argc < 2) {
+        err_write("ERROR: full 4D slot is still loading; use (slot n 0) for t=0 or wait\n");
+        return val_new_nil();
+    }
     /* for huge volumes, return zero-copy ref instead of copying */
     int64_t total = (int64_t)s->nx * s->ny * s->nz * (s->nt > 1 ? s->nt : 1);
     int use_ref = (total > 200000000);
@@ -111,7 +115,11 @@ static Value *bridge_op_slot(int argc, Value **args) {
         return val_new_volume4d_from_buf(s->nx, s->ny, s->nz, s->nt,
                                           s->dx, s->dy, s->dz, s->tr, s->vol);
     } else if (s->nt > 1 && t >= 0) {
-        if (t >= s->nt) t = s->nt - 1;
+        int available_t = s->loaded_t_count > 0 ? s->loaded_t_count : s->nt;
+        if (t >= available_t) {
+            err_write("ERROR: requested timepoint is not loaded yet\n");
+            return val_new_nil();
+        }
         int64_t offset = (int64_t)t * s->nx * s->ny * s->nz;
         if (use_ref) {
             Value *r = val_new_slot_ref(n);
@@ -303,6 +311,10 @@ static Value *bridge_op_drift(int argc, Value **args) {
     ImageSlot *s = &g_app->slots[n];
     if (!s->vol || s->nt < 2) {
         err_write("ERROR: drift needs 4D slot with >= 2 timepoints\n");
+        return val_new_nil();
+    }
+    if (s->loaded_t_count < s->nt) {
+        err_write("ERROR: drift needs the full 4D slot; background load is still running\n");
         return val_new_nil();
     }
     int factor = (argc >= 2 && args[1]->type == TYPE_VOLUME3D &&
