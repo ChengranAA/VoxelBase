@@ -19,7 +19,9 @@ typedef struct ProgressiveJob {
   int success;
   nifti_image *full_nim;
   float *full_vol;
+  int use_gz_cache;
   char path[1024];
+  char cache_path[1024];
   char error[128];
 } ProgressiveJob;
 

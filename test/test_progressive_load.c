@@ -36,7 +36,8 @@ int main(void) {
 
     assert(voxelbase_should_progressive_load(&large_4d, "bold.nii") == 1);
     assert(voxelbase_should_progressive_load(&large_4d, "bold.img") == 1);
-    assert(voxelbase_should_progressive_load(&large_4d, "bold.nii.gz") == 0);
+    assert(voxelbase_should_progressive_load(&large_4d, "bold.nii.gz") == 1);
+    assert(voxelbase_should_progressive_load(&large_4d, "bold.hdr.gz") == 0);
     assert(voxelbase_should_progressive_load(&small_4d, "small.nii") == 0);
     assert(voxelbase_should_progressive_load(&large_3d, "anat.nii") == 0);
     assert(voxelbase_should_progressive_load(NULL, "missing.nii") == 0);
