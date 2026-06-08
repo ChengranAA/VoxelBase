@@ -37,27 +37,51 @@ static int is_vbl_keyword(const char *word, int len) {
     return 0;
 }
 
-/* ── syntax-highlighted REPL input rendering ────────────────── */
-static void draw_repl_input_hl(const char *text, int cursor, const char *hint,
-                                int x, int y, int font_size) {
+/* ── syntax-highlighted REPL input rendering (with wrapping) ── */
+/* returns number of visual lines drawn */
+static int draw_repl_input_hl(const char *text, int cursor, const char *hint,
+                               int x, int y, int max_width,
+                               int font_size, int line_height) {
     int len = (int)strlen(text);
     int px = x;
+    int py = y;
+    int vlines = 1;
     Color c;
 
     for (int i = 0; i <= len; i++) {
         char ch = (i < len) ? text[i] : '_';
         int is_cursor = (i == cursor);
+        int ch_w;
+
+        if (ch == '_' && i >= len) {
+            ch_w = 8;
+        } else {
+            char tmp[2] = {ch, 0};
+            ch_w = MeasureText(tmp, font_size) + 2;
+        }
+
+        /* wrap before drawing if this char would overflow */
+        if (px + ch_w > x + max_width && px > x) {
+            px = x;
+            py += line_height;
+            vlines++;
+        }
 
         if (is_cursor) {
             /* draw cursor block */
-            DrawRectangle(px, y, 8, font_size + 2, (Color){100, 220, 100, 180});
+            DrawRectangle(px, py, 8, font_size + 2, (Color){100, 220, 100, 180});
             if (i >= len) {
                 /* cursor at end — draw hint as ghost text after cursor */
                 if (hint && hint[0]) {
                     int hint_x = px + 10;
-                    DrawText(hint, hint_x, y, font_size, (Color){90, 90, 100, 180});
+                    int hint_w = MeasureText(hint, font_size);
+                    if (hint_x + hint_w > x + max_width) {
+                        hint_x = x;
+                        py += line_height;
+                        vlines++;
+                    }
+                    DrawText(hint, hint_x, py, font_size, (Color){90, 90, 100, 180});
                 }
-                px += 8;
                 break;
             }
             ch = text[i];
@@ -96,9 +120,10 @@ static void draw_repl_input_hl(const char *text, int cursor, const char *hint,
         }
 
         char buf[2] = {ch, 0};
-        DrawText(buf, px, y, font_size, c);
+        DrawText(buf, px, py, font_size, c);
         px += MeasureText(buf, font_size) + 2;
     }
+    return vlines;
 }
 
 /* ── tab completion ─────────────────────────────────────────── */
@@ -181,12 +206,46 @@ static void draw_output_hl(const char *text, int x, int y, int font_size) {
     }
 }
 
+static int count_input_lines(const char *text, int cursor, const char *hint,
+                             int max_width, int font_size) {
+    int len = (int)strlen(text);
+    int px = 0;
+    int lines = 1;
+    for (int i = 0; i <= len; i++) {
+        char ch = (i < len) ? text[i] : '_';
+        int is_cursor = (i == cursor);
+        int ch_w;
+
+        if (ch == '_' && i >= len) {
+            ch_w = 8;
+        } else {
+            char tmp[2] = {ch, 0};
+            ch_w = MeasureText(tmp, font_size) + 2;
+        }
+
+        if (px + ch_w > max_width && px > 0) { px = 0; lines++; }
+
+        if (is_cursor && i >= len) {
+            if (hint && hint[0]) {
+                int hint_x = px + 10 + 8;
+                int hint_w = MeasureText(hint, font_size);
+                if (hint_x + hint_w > max_width) lines++;
+            }
+            break;
+        }
+        px += ch_w;
+    }
+    return lines;
+}
+
+
+
 /* ── REPL panel (shared between zero-slot and normal mode) ──── */
 static void draw_repl_panel(App *app, Rectangle bounds) {
     const int input_font = 14;
     const int output_font = 14;
     const int output_lh  = 22;  /* line height for output */
-    const int bar_h = 28;       /* input bar height */
+    const int inp_pad = 8;
 
     Rectangle inner = {bounds.x + 6, bounds.y + 6,
                        bounds.width - 12, bounds.height - 12};
@@ -199,6 +258,22 @@ static void draw_repl_panel(App *app, Rectangle bounds) {
         inner.height -= 20;
     }
 
+    int out_w = (int)inner.width - 8;
+    int max_text_w = out_w - 4;
+    /* fixed char width at this font size (~8px avg for raylib default) */
+    int char_w = 9;
+    int max_chars = max_text_w / char_w;
+    if (max_chars < 20) max_chars = 20;
+
+    /* ── dynamic input bar height from wrapped lines ────────── */
+    int inp_text_w = max_text_w - 30;
+    if (inp_text_w < 80) inp_text_w = 80;
+    int inp_lines = count_input_lines(app->repl_input, app->repl_cursor,
+                                      app->repl_hint, inp_text_w, input_font);
+    if (inp_lines < 1) inp_lines = 1;
+    int bar_h = inp_lines * output_lh + inp_pad;
+    if (bar_h < 28) bar_h = 28;
+
     int out_area_h = (int)inner.height - bar_h - 8;
     if (out_area_h < 40) out_area_h = 40;
 
@@ -208,12 +283,6 @@ static void draw_repl_panel(App *app, Rectangle bounds) {
     DrawRectangleLines((int)inner.x, (int)inner.y, (int)inner.width, out_area_h,
                         (Color){50, 50, 55, 255});
 
-    int out_w = (int)inner.width - 8;
-    int max_text_w = out_w - 4;
-    /* fixed char width at this font size (~8px avg for raylib default) */
-    int char_w = 8;
-    int max_chars = max_text_w / char_w;
-    if (max_chars < 20) max_chars = 20;
     Vector2 mp = GetMousePosition();
 
     if (app->repl_mode == 0) {
@@ -382,7 +451,9 @@ static void draw_repl_panel(App *app, Rectangle bounds) {
 
     /* syntax-highlighted input with cursor + ghost hint */
     draw_repl_input_hl(app->repl_input, app->repl_cursor, app->repl_hint,
-                       (int)inner.x + 22, inp_y + 5, input_font);
+                       (int)inner.x + 22, inp_y + 4, inp_text_w,
+                       input_font, output_lh);
+
 
     /* ── keyboard input ──────────────────────────────────────── */
     int len = (int)strlen(app->repl_input);
