@@ -208,6 +208,37 @@ int main(int argc, char **argv) {
         if (ast->type == AST_LIST && ast->list.count > 0) {
             AstNode *head = ast->list.items[0];
             if (head->type == AST_SYMBOL) {
+                if (strcmp(head->symbol, "if") == 0) {
+                    /* (if cond then [else]) */
+                    if (ast->list.count >= 3) {
+                        GraphNode *cg = graph_build(ast->list.items[1]);
+                        int truthy = 0;
+                        if (cg && graph_eval(cg) == 0 && cg->result) {
+                            Value *cv = cg->result;
+                            truthy = cv->is_int ? (cv->idata && cv->idata[0] != 0)
+                                                : (cv->data  && cv->data[0]  != 0.0f);
+                        }
+                        graph_free(cg);
+                        AstNode *branch = truthy ? ast->list.items[2]
+                                     : (ast->list.count >= 4 ? ast->list.items[3] : NULL);
+                        if (branch) {
+                            if (branch->type == AST_LIST && branch->list.count > 0 &&
+                                branch->list.items[0]->type == AST_SYMBOL &&
+                                strcmp(branch->list.items[0]->symbol, "print") == 0 &&
+                                branch->list.count >= 2) {
+                                GraphNode *pg = graph_build(branch->list.items[1]);
+                                if (pg && graph_eval(pg) == 0) val_print(pg->result);
+                                graph_free(pg);
+                            } else {
+                                GraphNode *bg = graph_build(branch);
+                                if (bg && graph_eval(bg) == 0) val_print(bg->result);
+                                graph_free(bg);
+                            }
+                        }
+                    }
+                    ast_free(ast);
+                    continue;
+                }
                 if (strcmp(head->symbol, "exit") == 0) {
                     done = 1;
                     ast_free(ast);
@@ -215,9 +246,24 @@ int main(int argc, char **argv) {
                 }
                 if (strcmp(head->symbol, "def") == 0) {
                     if (ast->list.count >= 3 && ast->list.items[1]->type == AST_SYMBOL) {
+                        const char *name = ast->list.items[1]->symbol;
+                        /* reject reserved words */
+                        static const char *reserved[] = {
+                            "def", "print", "show", "save", "vars", "exit",
+                            "load-script", "save-script", "if", NULL
+                        };
+                        int blocked = 0;
+                        for (int ri = 0; reserved[ri]; ri++)
+                            if (strcmp(name, reserved[ri]) == 0) { blocked = 1; break; }
+                        if (!blocked && op_find(name)) blocked = 1;
+                        if (blocked) {
+                            fprintf(stderr, "ERROR: '%s' is reserved\n", name);
+                            ast_free(ast);
+                            continue;
+                        }
                         GraphNode *gn = graph_build(ast->list.items[2]);
                         if (!graph_eval(gn)) {
-                            env_bind(ast->list.items[1]->symbol, gn->result);
+                            env_bind(name, gn->result);
                             gn->result = NULL;
                             gn->literal = NULL;
                         }
@@ -279,12 +325,85 @@ int main(int argc, char **argv) {
                                     AstNode *sh = sa->list.items[0];
                                     if (sh->type == AST_SYMBOL && strcmp(sh->symbol, "def") == 0) {
                                         if (sa->list.count >= 3 && sa->list.items[1]->type == AST_SYMBOL) {
-                                            GraphNode *gn = graph_build(sa->list.items[2]);
-                                            if (!graph_eval(gn)) {
-                                                env_bind(sa->list.items[1]->symbol, gn->result);
-                                                gn->result = NULL; gn->literal = NULL;
+                                            const char *nm = sa->list.items[1]->symbol;
+                                            static const char *resv[] = {"def","print","show","save","vars","exit","load-script","save-script","if",NULL};
+                                            int blk = 0;
+                                            for (int r = 0; resv[r]; r++) if (strcmp(nm,resv[r])==0) {blk=1;break;}
+                                            if (!blk && op_find(nm)) blk = 1;
+                                            if (blk) { fprintf(stderr,"ERROR: '%s' is reserved\n",nm); }
+                                            else {
+                                                GraphNode *gn = graph_build(sa->list.items[2]);
+                                                if (!graph_eval(gn)) {
+                                                    env_bind(nm, gn->result);
+                                                    gn->result = NULL; gn->literal = NULL;
+                                                }
+                                                graph_free(gn);
                                             }
-                                            graph_free(gn);
+                                        }
+                                    } else if (sh->type == AST_SYMBOL && strcmp(sh->symbol, "if") == 0) {
+                                        if (sa->list.count >= 3) {
+                                            GraphNode *cg = graph_build(sa->list.items[1]);
+                                            int truthy = 0;
+                                            if (cg && graph_eval(cg) == 0 && cg->result) {
+                                                Value *cv = cg->result;
+                                                truthy = cv->is_int ? (cv->idata && cv->idata[0] != 0)
+                                                                    : (cv->data  && cv->data[0]  != 0.0f);
+                                            }
+                                            graph_free(cg);
+                                            AstNode *branch = truthy ? sa->list.items[2]
+                                                         : (sa->list.count >= 4 ? sa->list.items[3] : NULL);
+                                            if (branch) {
+                                                /* if branch is (print ...), handle directly */
+                                                if (branch->type == AST_LIST && branch->list.count > 0 &&
+                                                    branch->list.items[0]->type == AST_SYMBOL &&
+                                                    strcmp(branch->list.items[0]->symbol, "print") == 0 &&
+                                                    branch->list.count >= 2) {
+                                                    GraphNode *pg = graph_build(branch->list.items[1]);
+                                                    if (pg && graph_eval(pg) == 0) val_print(pg->result);
+                                                    graph_free(pg);
+                                                } else {
+                                                    GraphNode *bg = graph_build(branch);
+                                                    if (bg && graph_eval(bg) == 0) val_print(bg->result);
+                                                    graph_free(bg);
+                                                }
+                                            }
+                                        }
+                                    } else if (sh->type == AST_SYMBOL && strcmp(sh->symbol, "vars") == 0) {
+                                        int n = env_count();
+                                        if (n == 0) { printf("  (no variables defined)\n"); }
+                                        else for (int vi = 0; vi < n; vi++) {
+                                            const char *vname; Value *vv;
+                                            env_get(vi, &vname, &vv);
+                                            const char *tn = "?";
+                                            if (vv) switch (vv->type) {
+                                                case TYPE_VOLUME3D: tn="vol3d"; break;
+                                                case TYPE_VOLUME4D: tn="vol4d"; break;
+                                                case TYPE_TIMESERIES: tn="ts"; break;
+                                                case TYPE_CORRMAP: tn="corrmap"; break;
+                                                case TYPE_MASK: tn="mask"; break;
+                                                case TYPE_NIL: tn="nil"; break;
+                                                case TYPE_AFFINE: tn="affine"; break;
+                                            }
+                                            if (vv && vv->type==TYPE_VOLUME3D && vv->nx==1 && vv->ny==1 && vv->nz==1)
+                                                printf("  %-20s %s = %.6g\n", vname, tn, vv->data[0]);
+                                            else if (vv)
+                                                printf("  %-20s %s %dx%dx%d\n", vname, tn, vv->nx, vv->ny, vv->nz);
+                                            else printf("  %-20s (null)\n", vname);
+                                        }
+                                    } else if (sh->type == AST_SYMBOL && strcmp(sh->symbol, "print") == 0) {
+                                        if (sa->list.count >= 2) {
+                                            GraphNode *pg = graph_build(sa->list.items[1]);
+                                            if (pg && graph_eval(pg) == 0) val_print(pg->result);
+                                            graph_free(pg);
+                                        }
+                                    } else if (sh->type == AST_SYMBOL && strcmp(sh->symbol, "save") == 0) {
+                                        if (sa->list.count >= 3 && sa->list.items[2]->type == AST_STRING) {
+                                            GraphNode *sg = graph_build(sa->list.items[1]);
+                                            if (sg && graph_eval(sg) == 0) {
+                                                val_save_nifti(sg->result, sa->list.items[2]->string);
+                                                printf("OK -> %s\n", sa->list.items[2]->string);
+                                            }
+                                            graph_free(sg);
                                         }
                                     } else {
                                         GraphNode *gn = graph_build(sa);
@@ -304,6 +423,67 @@ int main(int argc, char **argv) {
                 if (strcmp(head->symbol, "save-script") == 0) {
                     if (ast->list.count >= 2 && ast->list.items[1]->type == AST_STRING) {
                         printf("  [save-script: not yet implemented]\n");
+                    }
+                    ast_free(ast);
+                    continue;
+                }
+                if (strcmp(head->symbol, "vars") == 0) {
+                    int n = env_count();
+                    if (n == 0) {
+                        printf("  (no variables defined)\n");
+                    } else {
+                        for (int i = 0; i < n; i++) {
+                            const char *name; Value *val;
+                            env_get(i, &name, &val);
+                            const char *tname = "?";
+                            if (!val) tname = "(null)";
+                            else switch (val->type) {
+                                case TYPE_VOLUME3D:  tname = "vol3d";   break;
+                                case TYPE_VOLUME4D:  tname = "vol4d";   break;
+                                case TYPE_TIMESERIES:tname = "ts";      break;
+                                case TYPE_CORRMAP:   tname = "corrmap"; break;
+                                case TYPE_MASK:      tname = "mask";    break;
+                                case TYPE_NIL:       tname = "nil";     break;
+                                case TYPE_AFFINE:    tname = "affine";  break;
+                            }
+                            if (val && val->type == TYPE_VOLUME3D && val->nx == 1 && val->ny == 1 && val->nz == 1)
+                                printf("  %-20s %s = %.6g\n", name, tname, val->data[0]);
+                            else if (val)
+                                printf("  %-20s %s %dx%dx%d\n", name, tname, val->nx, val->ny, val->nz);
+                            else
+                                printf("  %-20s (null)\n", name);
+                        }
+                    }
+                    ast_free(ast);
+                    continue;
+                }
+                if (strcmp(head->symbol, "if") == 0) {
+                    /* (if cond then [else]) */
+                    if (ast->list.count >= 3) {
+                        GraphNode *cg = graph_build(ast->list.items[1]);
+                        int truthy = 0;
+                        if (cg && graph_eval(cg) == 0 && cg->result) {
+                            Value *cv = cg->result;
+                            truthy = cv->is_int ? (cv->idata && cv->idata[0] != 0)
+                                                : (cv->data  && cv->data[0]  != 0.0f);
+                        }
+                        graph_free(cg);
+                        AstNode *branch = truthy ? ast->list.items[2]
+                                     : (ast->list.count >= 4 ? ast->list.items[3] : NULL);
+                        if (branch) {
+                            if (branch->type == AST_LIST && branch->list.count > 0 &&
+                                branch->list.items[0]->type == AST_SYMBOL &&
+                                strcmp(branch->list.items[0]->symbol, "print") == 0 &&
+                                branch->list.count >= 2) {
+                                GraphNode *pg = graph_build(branch->list.items[1]);
+                                if (pg && graph_eval(pg) == 0) val_print(pg->result);
+                                graph_free(pg);
+                            } else {
+                                GraphNode *bg = graph_build(branch);
+                                if (bg && graph_eval(bg) == 0) val_print(bg->result);
+                                graph_free(bg);
+                            }
+                        }
                     }
                     ast_free(ast);
                     continue;

@@ -31,3 +31,11 @@ Value *env_lookup(const char *name) {
         if (strcmp(g_env[i].name, name) == 0) return g_env[i].val;
     return NULL;
 }
+
+int env_count(void) { return g_env_count; }
+
+void env_get(int i, const char **name, Value **val) {
+    if (i < 0 || i >= g_env_count) { *name = NULL; *val = NULL; return; }
+    *name = g_env[i].name;
+    *val  = g_env[i].val;
+}

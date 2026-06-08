@@ -1,0 +1,148 @@
+;; VBL Test Suite — all synthetic, exercises every op
+;; Run:  ./build/vbl-test < test.vbl
+
+;; ── 1. vol3d constructor ───────────────────────────────────────
+(def a (vol3d 20 20 20 1.0))
+(def b (vol3d 20 20 20 2.0))
+(def z (vol3d 20 20 20 0.0))
+
+(print "── vol3d ──")
+(print (mean a))
+(print (mean b))
+(print (mean z))
+
+;; ── 2. Element-wise arithmetic ─────────────────────────────────
+(def s (add a b))
+(def d (sub b a))
+(def p (mul a b))
+(def q (div b a))
+
+(print "── arithmetic ──")
+(print (mean s))
+(print (mean d))
+(print (mean p))
+(print (mean q))
+
+;; ── 3. Broadcast ops ───────────────────────────────────────────
+(def x3  (bc* a 3.0))
+(def h   (bc/ a 2.0))
+(def p5  (bc+ a 5.0))
+(def m2  (bc- a 2.0))
+
+(print "── broadcast ──")
+(print (mean x3))
+(print (mean h))
+(print (mean p5))
+(print (mean m2))
+
+;; ── 4. Scalar stats (vol3d → 1×1×1) ───────────────────────────
+(def mn (mean a))
+(def sd (stdev a))
+(def lo (min  a))
+(def hi (max  a))
+(def su (sum  a))
+
+(print "── stats ──")
+(print mn)
+(print sd)
+(print lo)
+(print hi)
+(print su)
+
+;; ── 5. Noise ───────────────────────────────────────────────────
+(def ns (noise 10 10 10 0.5))
+(print "── noise ──")
+(print (mean ns))
+(print (stdev ns))
+
+;; ── 6. Smooth ──────────────────────────────────────────────────
+(def sm (smooth ns 2.0))
+(print "── smooth ──")
+(print (stdev sm))
+
+;; ── 7. Threshold ───────────────────────────────────────────────
+(def th (threshold ns 0.0))
+(print "── threshold ──")
+(print (sum th))
+
+;; ── 8. Mask ────────────────────────────────────────────────────
+(def mk (mask ns th))
+(print "── mask ──")
+(print (mean mk))
+
+;; ── 9. Comparisons ─────────────────────────────────────────────
+(def one  (vol3d 1 1 1 1.0))
+(def two  (vol3d 1 1 1 2.0))
+
+(print "── comparisons ──")
+(print (gt two one))
+(print (lt one two))
+(print (eq one one))
+(print (and (gt two one) (lt one two)))
+(print (or  (gt one two) (lt one two)))
+
+;; ── 10. Conditional (if) ───────────────────────────────────────
+(print "── if ──")
+
+(if (gt two one)
+    (print (mean one))
+    (print (mean zero)))
+
+(if (lt one two)
+    (print (mean one))
+    (print (mean zero)))
+
+(if (eq one one)
+    (print (mean one))
+    (print (mean zero)))
+
+(if (eq one two)
+    (print (mean one))
+    (print (mean one)))
+
+(if (and (gt two one) (lt one two))
+    (print (mean one))
+    (print (mean zero)))
+
+(if (or (gt one two) (lt one two))
+    (print (mean one))
+    (print (mean zero)))
+
+(def zero (vol3d 1 1 1 0.0))
+(if zero
+    (print (mean one))
+    (print (mean one)))
+
+(if (gt two one)
+    (print (mean one)))
+
+;; ── 11. Slice ──────────────────────────────────────────────────
+(def sl (slice a 0 10))
+(print "── slice ──")
+(print sl)
+
+;; ── 12. Copy ───────────────────────────────────────────────────
+(def cp (copy a))
+(print "── copy ──")
+(print (mean cp))
+
+;; ── 13. Reserved word ──────────────────────────────────────────
+(print "── reserved (3 errors expected) ──")
+(def if   42)
+(def mean 42)
+(def def  42)
+
+;; ── 14. Crop / Pad ─────────────────────────────────────────────
+(def cr (crop a 2 2 2 3 3 3))
+(print "── crop ──")
+(print cr)
+
+(def pd (pad a 2 2 2 2 2 2))
+(print "── pad ──")
+(print pd)
+
+;; ── 15. Vars ───────────────────────────────────────────────────
+(print "── all variables ──")
+(vars)
+
+(print "── DONE ──")

@@ -27,6 +27,7 @@
 #include "worker/env.h"
 #include "worker/pool.h"
 #include "worker/types.h"
+#include "worker/ops.h"
 
 /* ── global pointer for slot lookups ──────────────────────────── */
 static App *g_app = NULL;
@@ -599,12 +600,12 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                 {"bc-",      "(bc- vol scalar)",    "broadcast subtract",                       "vol3d vol4d scalar"},
                 {"bc*",      "(bc* vol scalar)",    "broadcast multiply",                       "vol3d vol4d scalar"},
                 {"bc/",      "(bc/ vol scalar)",    "broadcast divide",                          "vol3d vol4d scalar"},
-                {"mean",     "(mean vol)",          "scalar mean of all voxels",                 "vol3d vol4d →scalar"},
+                {"mean",     "(mean vol)",          "global scalar (3D) or temporal mean (4D)",  "vol3d vol4d →scalar →vol3d"},
                 {"tmean",    "(tmean vol4d t0 t1)", "temporal mean over [t0, t1]",              "vol4d →vol3d"},
-                {"stdev",    "(stdev vol)",         "scalar standard deviation",                 "vol3d vol4d →scalar"},
-                {"min",      "(min vol)",           "scalar minimum",                            "vol3d vol4d →scalar"},
-                {"max",      "(max vol)",           "scalar maximum",                            "vol3d vol4d →scalar"},
-                {"sum",      "(sum vol)",           "scalar sum of all voxels",                  "vol3d vol4d →scalar"},
+                {"stdev",    "(stdev vol)",         "global stdev (3D) or temporal stdev (4D)",  "vol3d vol4d →scalar →vol3d"},
+                {"min",      "(min vol)",           "global min (3D) or temporal min (4D)",      "vol3d vol4d →scalar →vol3d"},
+                {"max",      "(max vol)",           "global max (3D) or temporal max (4D)",      "vol3d vol4d →scalar →vol3d"},
+                {"sum",      "(sum vol)",           "global sum (3D) or temporal sum (4D)",      "vol3d vol4d →scalar →vol3d"},
                 {"tstd",     "(tstd vol4d)",        "temporal stdev → vol3d",                    "vol4d →vol3d"},
                 {"smooth",   "(smooth vol fwhm)",   "Gaussian smooth, fwhm in voxels/TRs",   "vol3d vol4d timeseries"},
                 {"crop",     "(crop v x0 x1 y0 y1 z0 z1)","crop to bounding box",              "vol3d vol4d"},
@@ -741,13 +742,59 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
         /* (def name expr) */
         if (strcmp(cmd, "def") == 0 && ast->list.count >= 3 &&
             ast->list.items[1]->type == AST_SYMBOL) {
+            const char *name = ast->list.items[1]->symbol;
+            /* reject reserved words */
+            static const char *reserved[] = {
+                "def","print","show","save","vars","exit","help",
+                "slot","load","load-script","repl-reset","clear",
+                "plot-line","add-line","plot-hist","if", NULL
+            };
+            int blocked = 0;
+            for (int ri = 0; reserved[ri]; ri++)
+                if (strcmp(name, reserved[ri]) == 0) { blocked = 1; break; }
+            if (!blocked && op_find(name)) blocked = 1;
+            if (blocked) {
+                if (g_app->repl_out_count < 200)
+                    snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                             "  ERROR: '%s' is reserved", name);
+                ast_free(ast);
+                goto check_err;
+            }
             GraphNode *gn = bridge_build_with_hook(ast->list.items[2]);
             if (gn && graph_eval(gn) == 0) {
-                env_bind(ast->list.items[1]->symbol, gn->result);
+                env_bind(name, gn->result);
                 gn->result = NULL;
                 gn->literal = NULL;
             }
             graph_free(gn);
+            ast_free(ast);
+            goto check_err;
+        }
+
+        /* (if cond then [else]) */
+        if (strcmp(cmd, "if") == 0 && ast->list.count >= 3) {
+            GraphNode *cg = bridge_build_with_hook(ast->list.items[1]);
+            int truthy = 0;
+            if (cg && graph_eval(cg) == 0 && cg->result) {
+                Value *cv = cg->result;
+                truthy = cv->is_int ? (cv->idata && cv->idata[0] != 0)
+                                    : (cv->data  && cv->data[0]  != 0.0f);
+            }
+            graph_free(cg);
+            AstNode *branch = truthy ? ast->list.items[2]
+                         : (ast->list.count >= 4 ? ast->list.items[3] : NULL);
+            if (branch) {
+                GraphNode *bg = bridge_build_with_hook(branch);
+                if (bg && graph_eval(bg) == 0 && bg->result) {
+                    char *out = capture_stdout_cb(bg->result);
+                    if (out) {
+                        if (g_app->repl_out_count < 200)
+                            snprintf(g_app->repl_output[g_app->repl_out_count++], 128, "%s", out);
+                        free(out);
+                    }
+                }
+                graph_free(bg);
+            }
             ast_free(ast);
             goto check_err;
         }
@@ -823,9 +870,28 @@ int vbl_bridge_eval(void *app_ptr, const char *input) {
                         sa->list.items[0]->type == AST_SYMBOL &&
                         strcmp(sa->list.items[0]->symbol, "def") == 0 &&
                         sa->list.count >= 3 && sa->list.items[1]->type == AST_SYMBOL) {
+                        const char *sname = sa->list.items[1]->symbol;
+                        {
+                            static const char *resv[] = {
+                                "def","print","show","save","vars","exit","help",
+                                "slot","load","load-script","repl-reset","clear",
+                                "plot-line","add-line","plot-hist","if", NULL
+                            };
+                            int blk = 0;
+                            for (int ri = 0; resv[ri]; ri++)
+                                if (strcmp(sname, resv[ri]) == 0) { blk = 1; break; }
+                            if (!blk && op_find(sname)) blk = 1;
+                            if (blk) {
+                                if (g_app->repl_out_count < 200)
+                                    snprintf(g_app->repl_output[g_app->repl_out_count++], 128,
+                                             "  [line %d] ERROR: '%s' is reserved", ln, sname);
+                                ast_free(sa); free(scopy);
+                                continue;
+                            }
+                        }
                         GraphNode *gn = bridge_build_with_hook(sa->list.items[2]);
                         if (gn && graph_eval(gn) == 0) {
-                            env_bind(sa->list.items[1]->symbol, gn->result);
+                            env_bind(sname, gn->result);
                             gn->result = NULL; gn->literal = NULL;
                         }
                         graph_free(gn);
