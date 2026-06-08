@@ -167,15 +167,47 @@ int load_slots(App *app, CliArgs *args) {
             slot->segs[0].label_mask = 0xFFFFFFFF;
             slot->num_segs = 1;
 
+            /* convert to FLOAT32 in-place so scl_slope / scl_inter
+               scaling is baked into the data (slope→1, inter→0).
+               After conversion we can just memcpy. */
+            if (snim->datatype != NIFTI_TYPE_FLOAT32 ||
+                snim->scl_slope != 1.0 || snim->scl_inter != 0.0) {
+                nifti_image_convert_inplace(snim, NIFTI_TYPE_FLOAT32);
+            }
+
             float *svol = (float *)malloc((size_t)snim->nvox * sizeof(float));
             if (svol) {
-                if (snim->datatype == NIFTI_TYPE_FLOAT32) {
-                    memcpy(svol, snim->data, (size_t)snim->nvox * sizeof(float));
-                } else if (snim->datatype == NIFTI_TYPE_INT16) {
-                    const short *s = (const short *)snim->data;
-                    for (int64_t j = 0; j < snim->nvox; j++) svol[j] = (float)s[j];
-                }
+                memcpy(svol, snim->data, (size_t)snim->nvox * sizeof(float));
                 slot->segs[0].vol = svol;
+
+                /* update threshold max */
+                for (int64_t j = 0; j < (int64_t)slot->segs[0].nx * slot->segs[0].ny * slot->segs[0].nz; j++) {
+                    float av = fabsf(svol[j]);
+                    if (av > app->ovl_abs_max) app->ovl_abs_max = av;
+                }
+                if (app->ovl_abs_max < 1.0f) app->ovl_abs_max = 1.0f;
+
+                /* scan for unique labels */
+                slot->segs[0].label_count = 0;
+                int64_t nv = (int64_t)slot->segs[0].nx * slot->segs[0].ny * slot->segs[0].nz;
+                int64_t step = nv / 50000 + 1;
+                for (int64_t j = 0; j < nv; j += step) {
+                    int lbl = (int)(svol[j] + 0.5f);
+                    if (lbl <= 0 || lbl > 19) continue;
+                    int found = 0;
+                    for (int k = 0; k < slot->segs[0].label_count; k++)
+                        if (slot->segs[0].labels[k] == lbl) { found = 1; break; }
+                    if (!found && slot->segs[0].label_count < 20)
+                        slot->segs[0].labels[slot->segs[0].label_count++] = lbl;
+                }
+                /* sort labels */
+                for (int a = 0; a < slot->segs[0].label_count - 1; a++)
+                    for (int b = a + 1; b < slot->segs[0].label_count; b++)
+                        if (slot->segs[0].labels[a] > slot->segs[0].labels[b]) {
+                            int tmp = slot->segs[0].labels[a];
+                            slot->segs[0].labels[a] = slot->segs[0].labels[b];
+                            slot->segs[0].labels[b] = tmp;
+                        }
             }
         }
     }
@@ -191,14 +223,15 @@ int load_slots(App *app, CliArgs *args) {
             slot->ovls[0].opacity = 0.5f;
             slot->num_ovls = 1;
 
+            /* convert to FLOAT32 so scaling is baked in */
+            if (onim->datatype != NIFTI_TYPE_FLOAT32 ||
+                onim->scl_slope != 1.0 || onim->scl_inter != 0.0) {
+                nifti_image_convert_inplace(onim, NIFTI_TYPE_FLOAT32);
+            }
+
             float *ovol = (float *)malloc((size_t)onim->nvox * sizeof(float));
             if (ovol) {
-                if (onim->datatype == NIFTI_TYPE_FLOAT32) {
-                    memcpy(ovol, onim->data, (size_t)onim->nvox * sizeof(float));
-                } else if (onim->datatype == NIFTI_TYPE_INT16) {
-                    const short *s = (const short *)onim->data;
-                    for (int64_t j = 0; j < onim->nvox; j++) ovol[j] = (float)s[j];
-                }
+                memcpy(ovol, onim->data, (size_t)onim->nvox * sizeof(float));
                 slot->ovls[0].vol = ovol;
             }
         }
@@ -390,22 +423,13 @@ int add_attachment_to_slot(App *app, int slot_idx, const char *path, int is_seg)
     float *vol = (float *)malloc((size_t)nvox * sizeof(float));
     if (!vol) { nifti_image_free(nim); return -1; }
 
-    if (nim->datatype == NIFTI_TYPE_FLOAT32 && nim->scl_slope == 1.0 && nim->scl_inter == 0.0) {
-        memcpy(vol, nim->data, (size_t)nvox * sizeof(float));
-    } else if (nim->datatype == NIFTI_TYPE_INT16 && nim->scl_slope == 1.0 && nim->scl_inter == 0.0) {
-        const short *s = (const short *)nim->data;
-        for (int64_t j = 0; j < nvox; j++) vol[j] = (float)s[j];
-    } else if (nim->datatype == NIFTI_TYPE_UINT16 && nim->scl_slope == 1.0 && nim->scl_inter == 0.0) {
-        const unsigned short *s = (const unsigned short *)nim->data;
-        for (int64_t j = 0; j < nvox; j++) vol[j] = (float)s[j];
-    } else if (nim->datatype == NIFTI_TYPE_UINT8 && nim->scl_slope == 1.0 && nim->scl_inter == 0.0) {
-        const unsigned char *s = (const unsigned char *)nim->data;
-        for (int64_t j = 0; j < nvox; j++) vol[j] = (float)s[j];
-    } else {
-        for (int64_t j = 0; j < nvox; j++)
-            vol[j] = (float)nifti_image_get_voxel(nim, j % att->nx,
-                (j / att->nx) % att->ny, j / ((int64_t)att->nx * att->ny), 0);
+    /* convert to FLOAT32 so scl_slope / scl_inter scaling is
+       baked into the data (slope->1, inter->0). */
+    if (nim->datatype != NIFTI_TYPE_FLOAT32 ||
+        nim->scl_slope != 1.0 || nim->scl_inter != 0.0) {
+        nifti_image_convert_inplace(nim, NIFTI_TYPE_FLOAT32);
     }
+    memcpy(vol, nim->data, (size_t)nvox * sizeof(float));
     att->vol = vol;
     (*count)++;
 

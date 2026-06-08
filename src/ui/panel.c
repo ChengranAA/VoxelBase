@@ -813,14 +813,16 @@ void draw_panel(App *app, Rectangle bounds) {
         DrawRectangleRec((Rectangle){inner.x, y, inner.width, 20}, (Color){42,42,48,255});
         DrawText("Layers", (int)inner.x + 6, y + 3, 10, (Color){160,160,170,255});
 
-        /* +Seg / +Ovl buttons */
+        /* +Seg / +Ovl buttons — click again to cancel */
         if (cs->num_segs < MAX_SEGS_PER_SLOT) {
-            if (GuiButton((Rectangle){inner.x + inner.width - 86, y + 1, 36, 18}, "+Seg"))
-                app->pending_attach = 1;
+            if (GuiButton((Rectangle){inner.x + inner.width - 86, y + 1, 36, 18},
+                          app->pending_attach == 1 ? "xSeg" : "+Seg"))
+                app->pending_attach = (app->pending_attach == 1) ? 0 : 1;
         }
         if (cs->num_ovls < MAX_OVLS_PER_SLOT) {
-            if (GuiButton((Rectangle){inner.x + inner.width - 44, y + 1, 36, 18}, "+Ovl"))
-                app->pending_attach = 2;
+            if (GuiButton((Rectangle){inner.x + inner.width - 44, y + 1, 36, 18},
+                          app->pending_attach == 2 ? "xOvl" : "+Ovl"))
+                app->pending_attach = (app->pending_attach == 2) ? 0 : 2;
         }
         if (app->pending_attach) {
             DrawText(app->pending_attach == 1 ? "Drop seg file..." : "Drop ovl file...",
