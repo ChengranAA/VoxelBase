@@ -1,9 +1,6 @@
-#include <errno.h>
 #include <float.h>
 #include <stdio.h>
 #include <strings.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <zlib.h>
 #include "app.h"
 #include "cli/cli.h"
@@ -30,6 +27,11 @@ int voxelbase_should_progressive_load(const nifti_image *nim, const char *path) 
     if (!nim || nim->nt <= 1) return 0;
     if (voxelbase_is_gz_path(path) && !voxelbase_is_nii_gz_path(path)) return 0;
     return voxelbase_raw_data_bytes(nim) >= PROGRESSIVE_THRESHOLD_BYTES;
+}
+
+int voxelbase_progressive_uses_persistent_cache(const char *path) {
+    (void)path;
+    return 0;
 }
 
 static float *convert_volume_float32(nifti_image *nim, ImageSlot *slot) {
@@ -216,127 +218,19 @@ static float *convert_first_volume_float32(nifti_image *nim, ImageSlot *slot) {
     return vol;
 }
 
-static unsigned long long fnv1a64_update(unsigned long long h, const void *data, size_t len) {
-    const unsigned char *p = (const unsigned char *)data;
-    for (size_t i = 0; i < len; i++) {
-        h ^= (unsigned long long)p[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-static int ensure_cache_dir(char *dir, size_t dir_sz) {
-    const char *home = getenv("HOME");
-    if (home && home[0]) {
-        snprintf(dir, dir_sz, "%s/Library/Caches/VoxelBase", home);
-        mkdir(dir, 0755);
-        snprintf(dir, dir_sz, "%s/Library/Caches/VoxelBase/nifti", home);
-        mkdir(dir, 0755);
-    } else {
-        snprintf(dir, dir_sz, "/tmp/voxelbase-nifti-cache");
-        mkdir(dir, 0755);
-    }
-    struct stat st;
-    return stat(dir, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
-}
-
-static int make_gz_cache_path(const char *path, char *out, size_t out_sz) {
-    if (!path || !out || out_sz == 0) return -1;
-    struct stat st;
-    if (stat(path, &st) != 0) return -1;
-
-    unsigned long long h = 1469598103934665603ULL;
-    h = fnv1a64_update(h, path, strlen(path));
-    h = fnv1a64_update(h, &st.st_size, sizeof(st.st_size));
-    h = fnv1a64_update(h, &st.st_mtime, sizeof(st.st_mtime));
-
-    char dir[1024];
-    if (ensure_cache_dir(dir, sizeof(dir)) != 0) return -1;
-    snprintf(out, out_sz, "%s/%016llx.nii", dir, h);
-    return 0;
-}
-
-static int file_exists_nonempty(const char *path) {
-    struct stat st;
-    return path && stat(path, &st) == 0 && st.st_size > 0;
-}
-
-static int decompress_gz_to_cache(const char *src, const char *dst, char *err, size_t err_sz) {
-    if (file_exists_nonempty(dst)) return 0;
-
-    char tmp[1200];
-    snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", dst, (long)getpid());
-
-    gzFile gz = gzopen(src, "rb");
-    if (!gz) {
-        snprintf(err, err_sz, "cannot open gzip source");
-        return -1;
-    }
-    FILE *out = fopen(tmp, "wb");
-    if (!out) {
-        gzclose(gz);
-        snprintf(err, err_sz, "cannot create cache file");
-        return -1;
-    }
-
-    unsigned char *buf = (unsigned char *)malloc(1024 * 1024);
-    if (!buf) {
-        fclose(out); gzclose(gz); unlink(tmp);
-        snprintf(err, err_sz, "cache buffer allocation failed");
-        return -1;
-    }
-
-    int ok = 1;
-    while (1) {
-        int n = gzread(gz, buf, 1024 * 1024);
-        if (n < 0) { ok = 0; break; }
-        if (n == 0) break;
-        if (fwrite(buf, 1, (size_t)n, out) != (size_t)n) { ok = 0; break; }
-    }
-
-    free(buf);
-    if (fclose(out) != 0) ok = 0;
-    gzclose(gz);
-
-    if (!ok) {
-        unlink(tmp);
-        snprintf(err, err_sz, "gzip cache write failed");
-        return -1;
-    }
-    if (rename(tmp, dst) != 0) {
-        unlink(tmp);
-        snprintf(err, err_sz, "cannot finalize cache file");
-        return -1;
-    }
-    return 0;
-}
-
 static void *progressive_worker_main(void *arg) {
     ProgressiveJob *job = (ProgressiveJob *)arg;
     float *vol = NULL;
     int success = 0;
     char err[128] = "background load failed";
 
-    const char *load_path = job->path;
-    if (job->use_gz_cache) {
-        if (decompress_gz_to_cache(job->path, job->cache_path, err, sizeof(err)) != 0) {
-            pthread_mutex_lock(&job->mutex);
-            job->success = 0;
-            snprintf(job->error, sizeof(job->error), "%s", err);
-            job->completed = 1;
-            pthread_mutex_unlock(&job->mutex);
-            return NULL;
-        }
-        load_path = job->cache_path;
-    }
-
-    nifti_image *nim = nifti_image_load(load_path, 1);
+    nifti_image *nim = nifti_image_load(job->path, 1);
     if (!nim || !nim->data) {
         snprintf(err, sizeof(err), "background full load failed");
     } else {
         ImageSlot tmp;
         memset(&tmp, 0, sizeof(tmp));
-        init_slot_metadata(&tmp, nim, load_path);
+        init_slot_metadata(&tmp, nim, job->path);
         vol = convert_volume_float32(nim, &tmp);
         if (vol) success = 1;
         else snprintf(err, sizeof(err), "background conversion failed");
@@ -362,12 +256,6 @@ static int start_progressive_worker(ImageSlot *slot, const char *path) {
     if (!job) return -1;
     pthread_mutex_init(&job->mutex, NULL);
     snprintf(job->path, sizeof(job->path), "%s", path);
-    job->use_gz_cache = voxelbase_is_gz_path(path);
-    if (job->use_gz_cache && make_gz_cache_path(path, job->cache_path, sizeof(job->cache_path)) != 0) {
-        pthread_mutex_destroy(&job->mutex);
-        free(job);
-        return -1;
-    }
     if (pthread_create(&job->thread, NULL, progressive_worker_main, job) != 0) {
         pthread_mutex_destroy(&job->mutex);
         free(job);
@@ -379,9 +267,7 @@ static int start_progressive_worker(ImageSlot *slot, const char *path) {
     slot->full_ready = 0;
     slot->load_failed = 0;
     slot->loaded_t_count = 1;
-    snprintf(slot->load_status, sizeof(slot->load_status), "%s",
-             job->use_gz_cache ? "decompressing .nii.gz cache in background" :
-                                 "loading full 4D in background");
+    snprintf(slot->load_status, sizeof(slot->load_status), "loading full 4D in background");
     return 0;
 }
 

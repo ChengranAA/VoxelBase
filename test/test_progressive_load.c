@@ -11,6 +11,7 @@
 int voxelbase_is_gz_path(const char *path);
 size_t voxelbase_raw_data_bytes(const nifti_image *nim);
 int voxelbase_should_progressive_load(const nifti_image *nim, const char *path);
+int voxelbase_progressive_uses_persistent_cache(const char *path);
 
 static nifti_image make_image(int64_t nvox, int nbyper, int64_t nt) {
     nifti_image nim;
@@ -41,6 +42,9 @@ int main(void) {
     assert(voxelbase_should_progressive_load(&small_4d, "small.nii") == 0);
     assert(voxelbase_should_progressive_load(&large_3d, "anat.nii") == 0);
     assert(voxelbase_should_progressive_load(NULL, "missing.nii") == 0);
+
+    assert(voxelbase_progressive_uses_persistent_cache("bold.nii.gz") == 0);
+    assert(voxelbase_progressive_uses_persistent_cache("bold.nii") == 0);
 
     return 0;
 }
